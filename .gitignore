@@ -1,0 +1,26 @@
+# Financial data and exports stay outside Git.
+data/
+backups/
+vault-export/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.ics
+*backup*.json
+# Machine-specific paths, passwords, and credentials.
+config.json
+auth.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Generated files and local environments.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.log
+preview.png

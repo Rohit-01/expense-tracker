@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the Pocket database
+
+[Service]
+Type=oneshot
+User=pocket
+Group=pocket
+UMask=0077
+ExecStart=/opt/pocket/.venv/bin/python /opt/pocket/deploy/backup.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pocket

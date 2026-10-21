@@ -1,0 +1,5 @@
+# Replace this with your real domain. Add this site block to your existing
+# Caddyfile if the VPS already serves other sites; do not replace those sites.
+pocket.yourdomain.com {
+    reverse_proxy 127.0.0.1:8768
+}

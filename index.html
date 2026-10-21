@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="lifeos-token" content="__CSRF__">
+  <title>Pocket · LifeOS</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar"><a class="brand" href="/" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a><div class="header-actions"><span id="sync-status" class="sync-status">Connecting…</span><a class="button subtle" href="/api/export.json" download>Export backup ↗</a></div></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">A LITTLE CLARITY, EVERY DAY</p><h1>Keep track. Let it go.</h1><p class="subheading">Your spending, money lent, and things to remember. All in one place.</p></div><span class="today" id="today"></span></section>
+    <section class="stats" aria-label="Your money at a glance">
+      <article class="stat"><div class="stat-label"><span>Spent this month</span><span class="stat-symbol">↗</span></div><strong id="spent">₹0</strong><p id="spent-meta">No expenses yet</p></article>
+      <article class="stat"><div class="stat-label"><span>Money to collect</span><span class="stat-symbol">↙</span></div><strong id="outstanding">₹0</strong><p id="loan-meta">No open loans</p></article>
+      <article class="stat"><div class="stat-label"><span>Open reminders</span><span class="stat-symbol">◷</span></div><strong id="reminder-count">0</strong><p id="reminder-meta">Nothing on your mind</p></article>
+    </section>
+    <div id="global-error" class="notice error" role="alert" hidden></div>
+    <div class="workspace">
+      <section class="entry-panel" aria-labelledby="entry-heading">
+        <div class="section-heading"><h2 id="entry-heading">Write it down</h2><span class="small-label">NEW ENTRY</span></div>
+        <label for="quick-entry" class="sr-only">Describe an expense, loan, or reminder</label>
+        <textarea id="quick-entry" class="quick-entry" rows="3" placeholder="Bought headphones for ₹2,500…"></textarea>
+        <div class="quick-actions"><span>Write a sentence, then review the details.</span><button id="parse-entry" type="button" class="button compact">Fill details ↓</button></div>
+        <div class="examples"><button type="button" data-example="expense">Try an expense</button><button type="button" data-example="loan">Try money lent</button><button type="button" data-example="reminder">Try a reminder</button></div>
+        <p id="parse-hint" class="hint" aria-live="polite">Or fill in the fields below.</p>
+        <form id="entry-form">
+          <div class="type-picker" role="group" aria-label="Entry type"><button type="button" data-kind="expense" aria-pressed="true">Expense</button><button type="button" data-kind="loan" aria-pressed="false">Money lent</button><button type="button" data-kind="reminder" aria-pressed="false">Reminder</button></div>
+          <label id="title-label" for="entry-title">What was it for?</label><input id="entry-title" required maxlength="200" placeholder="e.g. Headphones, groceries, dinner" autocomplete="off">
+          <div class="form-row">
+            <div id="amount-field"><label for="entry-amount">Amount · INR</label><input id="entry-amount" type="number" min="0.01" max="999999999.99" step="0.01" inputmode="decimal" required placeholder="0.00"></div>
+            <div id="date-field"><label for="entry-date">Entry date</label><input id="entry-date" type="date" required></div>
+          </div>
+          <div id="person-field" hidden><label for="entry-person">Who did you lend to?</label><input id="entry-person" maxlength="100" placeholder="Person’s name" autocomplete="off"></div>
+          <div id="category-field"><label for="entry-category">Category</label><select id="entry-category"><option>Shopping</option><option>Food &amp; groceries</option><option>Transport</option><option>Home &amp; bills</option><option>Health</option><option>Travel</option><option>Learning</option><option>Other</option></select></div>
+          <div class="reminder-toggle"><label class="checkbox-label"><input id="has-reminder" type="checkbox"> <span>Add a reminder</span></label><span id="reminder-optional">Optional</span></div>
+          <div id="due-field" hidden><label for="entry-due">Remind me on · India time</label><input id="entry-due" type="datetime-local"><p class="field-note">Shown here when due. Download its calendar event for a scheduled alert.</p></div>
+          <label for="entry-notes">A note <span class="muted">(optional)</span></label><textarea id="entry-notes" rows="2" maxlength="2000" placeholder="Anything you’ll want to remember"></textarea>
+          <div id="form-error" class="notice error" role="alert" hidden></div>
+          <div class="form-actions"><button class="button primary" type="submit" id="save-entry">Save expense <span>↗</span></button><button class="button subtle" type="button" id="cancel-edit" hidden>Cancel edit</button></div>
+        </form>
+        <p class="storage-note">Saved on this Mac. Your journal stays with you.</p>
+      </section>
+      <section class="journal-panel" aria-labelledby="journal-heading">
+        <div class="section-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2 id="journal-heading">Your journal</h2></div><span id="entry-count" class="count-badge">0 entries</span></div>
+        <div class="journal-toolbar"><div class="filters" role="group" aria-label="Filter journal"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="expense" aria-pressed="false">Expenses</button><button type="button" data-filter="loan" aria-pressed="false">Money lent</button><button type="button" data-filter="reminder" aria-pressed="false">Reminders</button></div><label class="sr-only" for="search">Search journal</label><input id="search" type="search" placeholder="Search your journal…"></div>
+        <div id="journal-list"></div>
+        <section class="reminders-section" aria-labelledby="up-next-heading"><div class="section-heading"><h2 id="up-next-heading">On your radar</h2><span class="small-label">REMINDERS</span></div><div id="reminder-list"></div></section>
+      </section>
+    </div>
+    <footer><span>LifeOS Pocket</span><span>INR · India time · Made for your everyday</span></footer>
+  </main>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="repay-dialog"><form id="repay-form"><div class="section-heading"><h2>Record money received</h2><button type="button" id="close-repay" class="button subtle" aria-label="Close repayment">✕</button></div><p id="repay-summary"></p><label for="repay-amount">Amount received · INR</label><input id="repay-amount" type="number" min="0.01" step="0.01" required><label for="repay-date">Date received</label><input id="repay-date" type="date" required><label for="repay-notes">Note (optional)</label><input id="repay-notes" maxlength="500"><div id="repay-error" class="notice error" role="alert" hidden></div><p class="field-note">Only record money you have actually received.</p><button class="button primary" type="submit" id="save-repayment">Record repayment</button></form></dialog>
+</body></html>

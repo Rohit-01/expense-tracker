@@ -1,0 +1,26 @@
+[Unit]
+Description=LifeOS Pocket
+After=network.target
+
+[Service]
+Type=exec
+User=pocket
+Group=pocket
+WorkingDirectory=/opt/pocket
+EnvironmentFile=/etc/pocket.env
+# Keep ONE worker: the ledger export lock and form token are process-local.
+ExecStart=/opt/pocket/.venv/bin/gunicorn --bind 127.0.0.1:8768 --workers 1 --threads 4 --timeout 30 --error-logfile - production:create_app()
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StateDirectory=pocket
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pocket
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

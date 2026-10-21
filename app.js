@@ -1,0 +1,173 @@
+'use strict';
+const $ = id => document.getElementById(id);
+let state = {entries: [], repayments: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null;
+let toastTimer;
+const currency = new Intl.NumberFormat('en-IN', {style:'currency',currency:'INR',maximumFractionDigits:2});
+const fmt = minor => currency.format(minor / 100);
+function today() { return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
+function shortDate(value) { return new Date(value.slice(0,10)+'T12:00:00+05:30').toLocaleDateString('en-IN',{day:'numeric',month:'short',timeZone:'Asia/Kolkata'}); }
+function dueDate(value) { return new Date(value+':00+05:30'); }
+function dueText(value) { return dueDate(value).toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',timeZone:'Asia/Kolkata'})+' IST'; }
+function left(entry) { return entry.amountMinor - state.repayments.filter(r=>r.entryId===entry.id).reduce((sum,r)=>sum+r.amountMinor,0); }
+function isActive(entry) { return entry.dueAt && !entry.reminderDone && (entry.kind !== 'loan' || left(entry)>0); }
+function node(tag, className, text) { const el=document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
+function action(text, callback) { const el=node('button','text-button',text); el.type='button'; el.addEventListener('click',callback); return el; }
+function error(id,message) { $(id).textContent=message; $(id).hidden=!message; }
+function toast(message) { clearTimeout(toastTimer); $('toast').textContent=message; $('toast').hidden=false; toastTimer=setTimeout(()=>$('toast').hidden=true,5000); }
+async function api(path, data) {
+  const options=data?{method:'POST',headers:{'Content-Type':'application/json','X-LifeOS-Token':document.querySelector('meta[name="lifeos-token"]').content},body:JSON.stringify(data)}:{};
+  const response=await fetch(path,options);
+  const result=await response.json();
+  if(!response.ok) throw new Error(result.error || 'Could not save. Please try again.');
+  return result;
+}
+function saved(message) {
+  toast(state.sync.ok ? message+(state.sync.remoteExport?' · ledger exported on VPS':' · synced to Obsidian') : message+(state.storageLocation==='vps'?' · saved on your VPS':' · saved on this Mac'));
+  render();
+}
+function setKind(value) {
+  kind=value;
+  document.querySelectorAll('[data-kind]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.kind===kind)));
+  $('amount-field').hidden=kind==='reminder'; $('entry-amount').required=kind!=='reminder';
+  $('person-field').hidden=kind!=='loan'; $('entry-person').required=kind==='loan';
+  $('category-field').hidden=kind!=='expense';
+  $('title-label').textContent=kind==='reminder'?'What do you need to remember?':kind==='loan'?'What is the loan for?':'What was it for?';
+  $('entry-title').placeholder=kind==='reminder'?'e.g. Pay electricity bill':kind==='loan'?'e.g. Help with rent':'e.g. Headphones, groceries, dinner';
+  $('has-reminder').disabled=kind==='reminder';
+  if(kind==='reminder') $('has-reminder').checked=true;
+  $('reminder-optional').textContent=kind==='reminder'?'Required':'Optional';
+  updateDue();
+  $('save-entry').textContent=editing?'Save changes':kind==='expense'?'Save expense ↗':kind==='loan'?'Save money lent ↗':'Save reminder ↗';
+}
+function updateDue() { $('due-field').hidden=!$('has-reminder').checked; $('entry-due').required=$('has-reminder').checked; }
+function resetForm() {
+  editing=null; $('entry-form').reset(); $('entry-date').value=today(); $('quick-entry').value='';
+  $('cancel-edit').hidden=true; $('entry-heading').textContent='Write it down';
+  $('parse-hint').textContent='Or fill in the fields below.'; error('form-error',''); setKind('expense');
+}
+function editEntry(entry) {
+  editing=entry.id; setKind(entry.kind); $('entry-heading').textContent='Edit entry';
+  $('entry-title').value=entry.title; $('entry-amount').value=entry.amountMinor?String(entry.amountMinor/100):'';
+  $('entry-person').value=entry.person; $('entry-category').value=entry.category||'Other'; $('entry-date').value=entry.date;
+  $('entry-notes').value=entry.notes; $('has-reminder').checked=Boolean(entry.dueAt); $('entry-due').value=entry.dueAt;
+  $('cancel-edit').hidden=false; updateDue(); error('form-error','');
+  $('entry-heading').scrollIntoView({behavior:'smooth',block:'start'}); $('entry-title').focus({preventScroll:true});
+}
+function render() {
+  const month=today().slice(0,7), expenses=state.entries.filter(e=>e.kind==='expense'&&e.date.startsWith(month));
+  const loans=state.entries.filter(e=>e.kind==='loan'&&left(e)>0), reminders=state.entries.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
+  $('spent').textContent=fmt(expenses.reduce((s,e)=>s+e.amountMinor,0));
+  $('spent-meta').textContent=expenses.length?`${expenses.length} expense${expenses.length===1?'':'s'} this month`:'No expenses this month';
+  $('outstanding').textContent=fmt(loans.reduce((s,e)=>s+left(e),0));
+  $('loan-meta').textContent=loans.length?`${loans.length} loan${loans.length===1?'':'s'} still open`:'No open loans';
+  $('reminder-count').textContent=String(reminders.length);
+  const overdue=reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
+  $('reminder-meta').textContent=overdue?`${overdue} past due · ready to review`:reminders.length?'A little nudge for later':'Nothing on your mind';
+  $('entry-count').textContent=`${state.entries.length} ${state.entries.length===1?'entry':'entries'}`;
+  $('sync-status').textContent=state.sync.ok?(state.sync.remoteExport?'Ledger exported on VPS':'Synced to Obsidian'):state.sync.enabled?'Saved · export needs attention':state.storageLocation==='vps'?'Saved on your VPS':'Saved on this Mac';
+  $('sync-status').classList.toggle('warning',!state.sync.ok);
+  error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
+  const query=$('search').value.trim().toLowerCase();
+  const list=state.entries.filter(e=>(filter==='all'||(filter==='reminder'?(e.kind==='reminder'||e.dueAt):e.kind===filter))&&[e.title,e.person,e.notes,e.category].join(' ').toLowerCase().includes(query));
+  list.sort((a,b)=>b.date.localeCompare(a.date)||b.createdAt.localeCompare(a.createdAt));
+  const journal=$('journal-list'); journal.replaceChildren();
+  if(!list.length) {
+    const box=node('div','empty'); box.append(node('span','empty-symbol','↗'),node('h3','',state.entries.length?'No matching entries':'A fresh page for your money'),node('p','',state.entries.length?'Try a different filter or search.':'Add your first expense, loan, or reminder. Small entries make the big picture clearer.')); journal.append(box);
+  }
+  for(const entry of list) {
+    const item=node('article','journal-item'), icon=node('div','entry-icon '+entry.kind,entry.kind==='loan'?'↙':entry.kind==='reminder'?'◷':'↗'); icon.setAttribute('aria-hidden','true');
+    const main=node('div','item-main'), amount=node('div','item-amount');
+    main.append(node('div','item-title',entry.title));
+    main.append(node('div','item-meta',[shortDate(entry.date),entry.kind==='loan'?`Lent to ${entry.person}`:entry.kind==='expense'?entry.category:'Reminder',entry.kind==='reminder'&&entry.reminderDone?'Completed':''].filter(Boolean).join(' · ')));
+    if(entry.kind!=='reminder') { amount.textContent=fmt(entry.kind==='loan'?left(entry):entry.amountMinor); amount.append(node('small','',entry.kind==='loan'?(left(entry)===0?'Repaid':'still to collect'):'spent')); }
+    else { amount.append(node('small','',entry.reminderDone?'Done':'Reminder')); }
+    if(entry.notes) main.append(node('div','item-note',entry.notes));
+    if(entry.kind==='loan') {
+      const received=entry.amountMinor-left(entry), progress=node('div','loan-progress'), fill=node('span');
+      fill.style.width=(received/entry.amountMinor*100)+'%'; progress.append(fill); progress.setAttribute('role','progressbar'); progress.setAttribute('aria-label','Loan repaid'); progress.setAttribute('aria-valuenow',String(Math.round(received/entry.amountMinor*100))); progress.setAttribute('aria-valuemin','0');progress.setAttribute('aria-valuemax','100');
+      // Inline CSS properties are applied by the trusted local script, never user input.
+      main.append(progress,node('div','item-meta',`${fmt(received)} received of ${fmt(entry.amountMinor)}`));
+      const repayments=state.repayments.filter(r=>r.entryId===entry.id);
+      if(repayments.length) { const details=node('details','repay-history'), ul=node('ul'); details.append(node('summary','',`${repayments.length} repayment${repayments.length===1?'':'s'}`)); for(const r of repayments) ul.append(node('li','',`${shortDate(r.date)} · ${fmt(r.amountMinor)}${r.notes?' · '+r.notes:''}`)); details.append(ul);main.append(details); }
+    }
+    if(entry.dueAt) main.append(node('div','item-meta',`${entry.reminderDone?'Reminder completed':'Reminder'} · ${dueText(entry.dueAt)}`));
+    const actions=node('div','item-actions'); actions.append(action('Edit',()=>editEntry(entry)));
+    if(entry.kind==='loan'&&left(entry)>0) actions.append(action('Record repayment',()=>openRepay(entry)));
+    if(entry.dueAt) {
+      const link=node('a','text-button','Calendar event ↗'); link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);
+      actions.append(action(entry.reminderDone?'Reopen reminder':'Mark reminder done',()=>toggle(entry,!entry.reminderDone)));
+    }
+    main.append(actions); item.append(icon,main,amount);journal.append(item);
+  }
+  const radar=$('reminder-list'); radar.replaceChildren();
+  if(!reminders.length) radar.append(node('div','reminder-empty','All clear. Add a reminder to an entry whenever you need a nudge.'));
+  for(const entry of reminders) {
+    const item=node('div','reminder-item'), tile=node('div','date-tile');
+    const parts=entry.dueAt.slice(0,10).split('-'), d=new Date(parts.join('-')+'T12:00:00+05:30');
+    tile.append(node('span','',d.toLocaleDateString('en-IN',{month:'short',timeZone:'Asia/Kolkata'}).toUpperCase()),node('strong','',String(Number(parts[2]))));
+    const main=node('div','reminder-main');main.append(node('div','item-title',entry.kind==='loan'?`Collect from ${entry.person}`:entry.title),node('div','item-meta',dueText(entry.dueAt)));
+    if(dueDate(entry.dueAt)<new Date()) main.append(node('span','due-label','Past due'));
+    if(entry.kind==='loan') main.append(node('div','item-meta',`${fmt(left(entry))} outstanding`));
+    const actions=node('div','item-actions');actions.append(action('Mark done',()=>toggle(entry,true)));
+    const link=node('a','text-button','Calendar event ↗');link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);main.append(actions);item.append(tile,main);radar.append(item);
+  }
+}
+function openRepay(entry) {
+  repayId=entry.id; $('repay-summary').textContent=`${entry.person} · ${fmt(left(entry))} outstanding`;
+  $('repay-amount').value='';$('repay-amount').max=String(left(entry)/100);$('repay-date').value=today();$('repay-notes').value='';error('repay-error','');$('repay-dialog').showModal();$('repay-amount').focus();
+}
+async function toggle(entry,done) {
+  try { state=await api('/api/reminders',{id:entry.id,done});saved(done?'Reminder marked done':'Reminder reopened'); }
+  catch(e) {error('global-error',e.message);}
+}
+function parseQuick() {
+  const text=$('quick-entry').value.trim(); if(!text) { $('parse-hint').textContent='Write a short sentence first, or use the fields below.';return; }
+  if(editing) { $('parse-hint').textContent='Finish or cancel your edit before starting a new quick entry.';return; }
+  const lower=text.toLowerCase();
+  const parsedKind=/\b(remind|reminder)\b/.test(lower)?'reminder':/\b(lent|lend|loan|loaned)\b/.test(lower)?'loan':'expense';
+  $('entry-form').reset();setKind(parsedKind);$('entry-date').value=today();
+  const marked=text.match(/(?:₹|rs\.?\s*|inr\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i)||text.match(/([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores))?\s*(?:rupees|inr)\b/i)||text.match(/\b(?:for|lent|lend|loaned|paid|spent)\s+([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i);
+  if(marked&&parsedKind!=='reminder') { const multiplier={k:1000,lakh:100000,lakhs:100000,crore:10000000,crores:10000000};$('entry-amount').value=String(Math.round(Number(marked[1].replaceAll(',',''))*(multiplier[(marked[2]||'').toLowerCase()]||1)*100)/100); }
+  if(parsedKind==='loan') { const person=text.match(/\bto\s+(.+?)(?=\s+(?:for|on|by|due|tomorrow|today|remind|next)\b|[,;]|$)/i); if(person) $('entry-person').value=person[1].trim(); }
+  let title=text.replace(/^\s*(?:remind me to|reminder to|remind me|reminder|bought|purchased|spent on)\s+/i,'').replace(/\s+(?:for\s+)?(?:₹|rs\.?\s*|inr\s*)[0-9][0-9,]*(?:\.[0-9]{1,2})?(?:\s*(?:k|lakhs?|crores?)\b)?/i,'');
+  if(parsedKind==='loan') title='Loan to '+($('entry-person').value||'someone');
+  $('entry-title').value=title.slice(0,200);$('entry-notes').value=text;
+  const categories=[[/\b(grocer|groceries|food|lunch|dinner|coffee|meal|restaurant)\b/,'Food & groceries'],[/\b(uber|taxi|petrol|fuel|bus|metro)\b/,'Transport'],[/\b(rent|electricity|bill|wifi|internet)\b/,'Home & bills'],[/\b(medicine|doctor|gym)\b/,'Health'],[/\b(book|course|class)\b/,'Learning'],[/\b(flight|hotel|trip)\b/,'Travel']];
+  $('entry-category').value=(categories.find(([re])=>re.test(lower))||[null,'Shopping'])[1];
+  let inferredDay='', assumedTime=false;
+  const explicit=lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if(explicit) inferredDay=explicit[1];
+  else if(/\btomorrow\b/.test(lower)) {const d=new Date(today()+'T12:00:00+05:30');d.setUTCDate(d.getUTCDate()+1);inferredDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}
+  else if(/\btoday\b/.test(lower)) inferredDay=today();
+  if(inferredDay&&(parsedKind==='reminder'||parsedKind==='loan'||/\b(remind|due)\b/.test(lower))) {
+    let hour=9,minute=0;
+    const time=lower.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/)||lower.match(/\bat\s+(\d{1,2}):(\d{2})\b/);
+    if(time) {hour=Number(time[1]);minute=Number(time[2]||0);if(time[3]) hour=hour%12+(time[3]==='pm'?12:0);}
+    else assumedTime=true;
+    if(hour<24&&minute<60) { $('has-reminder').checked=true;$('entry-due').value=inferredDay+'T'+String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');updateDue(); }
+  } else if(inferredDay&&parsedKind==='expense') $('entry-date').value=inferredDay;
+  $('parse-hint').textContent='Draft filled. Check the amount, person, and dates before saving.'+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
+}
+document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',()=>setKind(b.dataset.kind)));
+document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));render();}));
+document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];$('quick-entry').focus();}));
+$('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',render);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
+$('entry-form').addEventListener('submit',async event=>{
+  event.preventDefault();error('form-error',''); const button=$('save-entry');button.disabled=true;
+  try {
+    const wasEditing=Boolean(editing);
+    state=await api('/api/entries',{id:editing,kind,title:$('entry-title').value,amount:$('entry-amount').value,person:$('entry-person').value,category:$('entry-category').value||'Other',date:$('entry-date').value,dueAt:$('has-reminder').checked?$('entry-due').value:'',notes:$('entry-notes').value});
+    resetForm();saved(wasEditing?'Entry updated':'Entry saved');
+  } catch(e) {error('form-error',e.message);}
+  finally {button.disabled=false;}
+});
+$('repay-form').addEventListener('submit',async event=>{
+  event.preventDefault();error('repay-error','');$('save-repayment').disabled=true;
+  try {state=await api('/api/repayments',{entryId:repayId,amount:$('repay-amount').value,date:$('repay-date').value,notes:$('repay-notes').value});$('repay-dialog').close();saved('Repayment recorded');}
+  catch(e) {error('repay-error',e.message);}finally{$('save-repayment').disabled=false;}
+});
+$('today').textContent=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'});
+resetForm();
+api('/api/state').then(data=>{state=data;render();}).catch(e=>{error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';});
+setInterval(()=>render(),60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) api('/api/state').then(data=>{state=data;render();}).catch(()=>{});});
