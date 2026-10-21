@@ -40,6 +40,8 @@ def restore(snapshot, destination):
         if (staging / 'accounts.sqlite3').exists():
             with sqlite3.connect(staging / 'accounts.sqlite3') as conn:
                 conn.execute('DELETE FROM sessions')
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_tokens'").fetchone():
+                    conn.execute('DELETE FROM sync_tokens')
         staging.rename(destination)
     finally:
         if staging.exists():
@@ -57,7 +59,7 @@ def main():
         restored = restore(args.snapshot, args.data_dir)
     except (OSError, ValueError, sqlite3.Error, TypeError):
         raise SystemExit('Restore failed. Check the snapshot and use a new destination.') from None
-    print('Restored to ' + str(restored) + '. Sessions revoked; notes regenerate when the app opens each ledger.')
+    print('Restored to ' + str(restored) + '. Sessions and sync tokens revoked; notes regenerate when the app opens each ledger.')
 
 
 if __name__ == '__main__':

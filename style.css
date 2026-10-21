@@ -11,3 +11,11 @@
 @media(max-width:1000px){.auth-layout{gap:48px;grid-template-columns:1fr 380px}.auth-story h1{font-size:57px}.auth-card{padding:28px}.header-actions{flex-wrap:wrap;justify-content:flex-end}}
 @media(max-width:760px){.auth-header,.auth-footer{width:calc(100% - 40px)}.auth-header{padding:22px 0}.auth-header-note{display:none}.auth-layout{width:min(440px,calc(100% - 40px));grid-template-columns:1fr;gap:26px;padding:30px 0;margin:0 auto}.auth-story{display:none}.auth-card{padding:28px 24px;border-radius:16px}.auth-card h2{font-size:33px}.auth-card input{min-height:48px}.password-toggle{min-width:55px;font-size:12px}.auth-submit{min-height:48px}.auth-footer{margin-top:auto}.account-controls{gap:6px}.account-name{max-width:110px;font-size:10px}}
 @media(max-width:760px){.stat strong{font-size:clamp(18px,5vw,25px)}}
+
+/* Owner connection settings use a native modal for focus trapping and Escape. */
+#obsidian-dialog{width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow-y:auto}
+#obsidian-dialog .section-heading{align-items:flex-start}#obsidian-heading{max-width:330px;line-height:1.25}
+.sync-summary{background:var(--soft);border-radius:11px;padding:16px;margin:20px 0}.sync-summary p{margin:8px 0 0}.sync-summary #obsidian-token-status{color:var(--ink);font-weight:600}
+#obsidian-token-value{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;resize:none}
+.sync-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.sync-actions .primary{width:auto;margin:0;flex:1}.sync-actions .button{min-height:44px}
+@media(max-width:760px){#obsidian-dialog{padding:22px}.account-controls{flex-wrap:wrap;justify-content:flex-end;max-width:175px}.topbar>.brand{flex-shrink:0}}

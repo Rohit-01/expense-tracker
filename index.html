@@ -7,7 +7,7 @@
 </head>
 <body>
 <div class="shell">
-  <header class="topbar"><a class="brand" href="/" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a><div class="header-actions"><span id="sync-status" class="sync-status">Connecting…</span><a class="button subtle" href="/api/export.json" download>Export backup ↗</a><div id="account-controls" class="account-controls" hidden><span id="account-name" class="account-name"></span><button id="logout" type="button" class="button subtle">Log out</button></div></div></header>
+  <header class="topbar"><a class="brand" href="/" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a><div class="header-actions"><span id="sync-status" class="sync-status">Connecting…</span><a class="button subtle" href="/api/export.json" download>Export backup ↗</a><div id="account-controls" class="account-controls" hidden><button id="open-obsidian" type="button" class="button subtle" hidden>Obsidian sync</button><span id="account-name" class="account-name"></span><button id="logout" type="button" class="button subtle">Log out</button></div></div></header>
   <main>
     <section class="intro"><div><p class="eyebrow">A LITTLE CLARITY, EVERY DAY</p><h1>Keep track. Let it go.</h1><p class="subheading">Your spending, money lent, and things to remember. All in one place.</p></div><span class="today" id="today"></span></section>
     <section class="stats" aria-label="Your money at a glance">
@@ -53,4 +53,18 @@
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
 <dialog id="repay-dialog"><form id="repay-form"><div class="section-heading"><h2>Record money received</h2><button type="button" id="close-repay" class="button subtle" aria-label="Close repayment">✕</button></div><p id="repay-summary"></p><label for="repay-amount">Amount received · INR</label><input id="repay-amount" type="number" min="0.01" step="0.01" required><label for="repay-date">Date received</label><input id="repay-date" type="date" required><label for="repay-notes">Note (optional)</label><input id="repay-notes" maxlength="500"><div id="repay-error" class="notice error" role="alert" hidden></div><p class="field-note">Only record money you have actually received.</p><button class="button primary" type="submit" id="save-repayment">Record repayment</button></form></dialog>
+<dialog id="obsidian-dialog" aria-labelledby="obsidian-heading" aria-describedby="obsidian-description">
+  <div class="section-heading"><h2 id="obsidian-heading">Your journal in Obsidian</h2><button type="button" id="close-obsidian" class="button subtle" aria-label="Close Obsidian sync">✕</button></div>
+  <p id="obsidian-description">Connect your Mac to copy your expenses, loans, and reminders into your vault. Only your owner account is included.</p>
+  <div class="sync-summary"><span class="eyebrow">PRIVATE CONNECTION</span><p id="obsidian-token-status" role="status">Loading…</p><p class="field-note">A token allows read-only access for 90 days. Your Mac still needs the sync helper set up before your notes will update.</p></div>
+  <p id="obsidian-token-help">Generate a token, then enter it into the Mac setup prompt. Keep it private.</p>
+  <div id="obsidian-token-once" hidden>
+    <label for="obsidian-token-value">Your token · shown only once</label>
+    <textarea id="obsidian-token-value" readonly rows="3" spellcheck="false" autocomplete="off" aria-describedby="obsidian-once-help"></textarea>
+    <p id="obsidian-once-help" class="field-note">Save this in your Mac’s setup prompt before closing. It will be stored in Keychain. Do not paste it into chat or notes.</p>
+    <button type="button" id="copy-obsidian-token" class="button">Copy token</button>
+  </div>
+  <div id="obsidian-error" class="notice error" role="alert" hidden></div>
+  <div class="sync-actions"><button type="button" id="generate-obsidian-token" class="button primary" disabled>Generate token</button><button type="button" id="revoke-obsidian-token" class="button subtle" hidden>Revoke token</button></div>
+</dialog>
 </body></html>

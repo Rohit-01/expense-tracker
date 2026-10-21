@@ -62,6 +62,18 @@ def create_app(settings=None):
             return None
         if not request.is_secure:
             return jsonify(error='Use the HTTPS address for Pocket.'), 403
+        # This one read-only endpoint uses a bearer token, never browser cookies.
+        # All other routes retain the existing session and CSRF requirements.
+        if request.path == '/api/obsidian/ledger.md':
+            if request.method not in ['GET', 'HEAD']:
+                return jsonify(error='Read-only endpoint.'), 405
+            credential = re.fullmatch(r'Bearer (pocket_sync_[A-Za-z0-9_-]{43})', request.headers.get('Authorization', ''), re.IGNORECASE)
+            g.sync_owner = accounts.sync_owner(credential[1]) if credential else None
+            if not g.sync_owner:
+                return jsonify(error='A valid owner sync token is required.'), 401
+            if request.query_string:
+                return jsonify(error='This endpoint does not accept query parameters.'), 400
+            return None
         g.session = accounts.session(request.cookies.get(COOKIE))
         public = request.path in {'/login', '/signup', '/auth.js', '/style.css'}
         if not public and not (g.session and g.session['user_id']):
@@ -153,13 +165,39 @@ def create_app(settings=None):
 
     @app.get('/api/ledger.md')
     def export_markdown():
-        ledger = get_ledger(g.session)
+        return ledger_response(g.session)
+
+    def ledger_response(user):
+        ledger = get_ledger(user)
         with ledger.lock:
             ledger.sync_note()
             if not ledger.sync['ok']:
                 return jsonify(error='Ledger export unavailable. Your database remains saved.'), 503
             content = (ledger.vault/'ai zone/openai agent/Personal/Finance/Expense Ledger.md').read_bytes()
         return Response(content, content_type='text/markdown; charset=utf-8', headers={'Content-Disposition':'attachment; filename="Expense Ledger.md"'})
+
+    @app.get('/api/obsidian/ledger.md')
+    def obsidian_ledger():
+        response = ledger_response(g.sync_owner)
+        if isinstance(response, Response):
+            response.headers['X-Pocket-Owner-ID'] = g.sync_owner['id']
+        return response
+
+    def sync_details(details):
+        return jsonify(**details, ownerId=g.session['id'], endpoint='https://' + domain + '/api/obsidian/ledger.md')
+
+    @app.get('/api/obsidian/token')
+    def sync_token_status():
+        return sync_details(accounts.sync_status(g.session['id']))
+
+    @app.post('/api/obsidian/token')
+    def issue_sync_token():
+        return sync_details(accounts.create_sync_token(g.session['id']))
+
+    @app.post('/api/obsidian/token/revoke')
+    def revoke_sync_token():
+        accounts.revoke_sync_token(g.session['id'])
+        return sync_details(accounts.sync_status(g.session['id']))
 
     @app.get('/api/reminder.ics')
     def calendar():

@@ -27,12 +27,12 @@ async function api(path, data) {
   const response=await fetch(path,options);
   if (response.status === 401 && expectedAccount) { leaveAccount(); throw new Error('Please log in again.'); }
   const result=await response.json();
-  if (expectedAccount && result.account && result.account.id !== expectedAccount) { leaveAccount('/'); throw new Error('Account changed.'); }
+  if (expectedAccount && ((result.account && result.account.id !== expectedAccount) || (result.ownerId && result.ownerId !== expectedAccount))) { leaveAccount('/'); throw new Error('Account changed.'); }
   if(!response.ok) throw new Error(result.error || 'Could not save. Please try again.');
   return result;
 }
 function saved(message) {
-  toast(state.sync.ok ? message+(state.sync.remoteExport?' · ledger exported on VPS':' · synced to Obsidian') : message+(state.storageLocation==='vps'?' · saved on your VPS':' · saved on this Mac'));
+  toast(state.storageLocation==='vps' ? message : message+(state.sync.ok?' · synced to Obsidian':' · saved on this Mac'));
   render();
 }
 function setKind(value) {
@@ -69,6 +69,7 @@ function render() {
     $('account-controls').hidden = false;
     $('account-name').textContent = state.account.username;
     $('account-name').title = state.account.username;
+    $('open-obsidian').hidden = !state.account.isOwner;
   }
   const month=today().slice(0,7), expenses=state.entries.filter(e=>e.kind==='expense'&&e.date.startsWith(month));
   const loans=state.entries.filter(e=>e.kind==='loan'&&left(e)>0), reminders=state.entries.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
@@ -80,7 +81,7 @@ function render() {
   const overdue=reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
   $('reminder-meta').textContent=overdue?`${overdue} past due · ready to review`:reminders.length?'A little nudge for later':'Nothing on your mind';
   $('entry-count').textContent=`${state.entries.length} ${state.entries.length===1?'entry':'entries'}`;
-  $('sync-status').textContent=state.sync.ok?(state.sync.remoteExport?'Ledger exported on VPS':'Synced to Obsidian'):state.sync.enabled?'Saved · export needs attention':state.storageLocation==='vps'?'Saved on your VPS':'Saved on this Mac';
+  $('sync-status').textContent=state.sync.ok?(state.sync.remoteExport?'All changes saved':'Synced to Obsidian'):state.sync.enabled?'Saved · export needs attention':state.storageLocation==='vps'?'Saved on your VPS':'Saved on this Mac';
   $('sync-status').classList.toggle('warning',!state.sync.ok);
   error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
   const query=$('search').value.trim().toLowerCase();
@@ -198,3 +199,57 @@ if (expectedAccount) {
   window.addEventListener('pagehide', () => { document.documentElement.style.visibility = 'hidden'; });
   window.addEventListener('pageshow', event => { if (event.persisted) leaveAccount('/'); });
 }
+
+// Owner-only connection controls. Tokens live only in this open dialog, never browser storage.
+let syncDialogVersion = 0;
+function clearSyncToken() {
+  if (!$('obsidian-token-value')) return;
+  $('obsidian-token-value').value = '';
+  $('obsidian-token-once').hidden = true;
+  $('copy-obsidian-token').textContent = 'Copy token';
+}
+function renderSyncSettings(data) {
+  const expires = data.expiresAt ? new Date(data.expiresAt * 1000).toLocaleDateString(undefined, {dateStyle:'medium'}) : '';
+  $('obsidian-token-status').textContent = data.active ? `Token active · expires ${expires}` : data.expiresAt ? 'Token expired · generate a new one' : 'No active token';
+  $('generate-obsidian-token').textContent = data.active ? 'Replace token' : 'Generate token';
+  $('revoke-obsidian-token').hidden = !data.active;
+  $('obsidian-token-help').textContent = data.active ? 'Replacing or revoking stops future downloads with the current token. Replacing it requires updating Keychain on your Mac.' : 'Generate a token, then enter it into the Mac setup prompt. Keep it private.';
+}
+async function syncSettingsAction(path, data) {
+  const version = ++syncDialogVersion;
+  clearSyncToken(); error('obsidian-error', '');
+  $('generate-obsidian-token').disabled = true;
+  $('revoke-obsidian-token').disabled = true;
+  try {
+    const result = await api(path, data);
+    if (leaving || version !== syncDialogVersion || !$('obsidian-dialog').open) return;
+    renderSyncSettings(result);
+    if (result.token) {
+      $('obsidian-token-value').value = result.token;
+      $('obsidian-token-once').hidden = false;
+      $('obsidian-token-value').focus();
+    }
+    $('generate-obsidian-token').disabled = false;
+    $('revoke-obsidian-token').disabled = false;
+    if (data && !result.token) $('generate-obsidian-token').focus();
+  } catch (e) {
+    if (!leaving && version === syncDialogVersion) {
+      error('obsidian-error', e.message + ' Close and reopen to check the connection.');
+    }
+  }
+}
+$('open-obsidian').addEventListener('click', () => {
+  $('obsidian-dialog').showModal();
+  $('obsidian-token-status').textContent = 'Loading…';
+  $('revoke-obsidian-token').hidden = true;
+  syncSettingsAction('/api/obsidian/token');
+});
+$('close-obsidian').addEventListener('click', () => $('obsidian-dialog').close());
+$('obsidian-dialog').addEventListener('close', () => { syncDialogVersion++; clearSyncToken(); });
+$('generate-obsidian-token').addEventListener('click', () => syncSettingsAction('/api/obsidian/token', {}));
+$('revoke-obsidian-token').addEventListener('click', () => syncSettingsAction('/api/obsidian/token/revoke', {}));
+$('copy-obsidian-token').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('obsidian-token-value').value); $('copy-obsidian-token').textContent = 'Copied'; }
+  catch { error('obsidian-error', 'Select the token and copy it manually.'); }
+});
+window.addEventListener('pagehide', () => { syncDialogVersion++; clearSyncToken(); });

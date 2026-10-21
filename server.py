@@ -183,6 +183,8 @@ class Ledger:
                 folder = self.vault / 'ai zone/openai agent/Personal/Finance'
                 folder.mkdir(parents=True, exist_ok=True)
                 target = folder / 'Expense Ledger.md'
+                if target.exists() and '<!-- pocket-vps-sync:v1 -->' in target.read_text():
+                    raise ValueError('This note is synchronized from your VPS. Use the online Pocket app for new records.')
                 if target.exists() and MARKER not in target.read_text():
                     raise ValueError('Expense Ledger.md already exists and is not managed by this tracker.')
                 expenses = [e for e in state['entries'] if e['kind'] == 'expense']

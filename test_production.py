@@ -13,7 +13,7 @@ from production import create_app
 from server import Ledger
 
 
-class ProductionTests(unittest.TestCase):
+class ProductionFixture:
     @classmethod
     def setUpClass(cls):
         cls.password = 'isolated-test-password-not-a-real-login'
@@ -57,6 +57,8 @@ class ProductionTests(unittest.TestCase):
         data.update(fields)
         return self.post(client or self.client,'/api/entries',data)
 
+
+class ProductionTests(ProductionFixture, unittest.TestCase):
     def test_signed_out_pages_and_no_browser_challenge(self):
         client=self.app.test_client()
         response=self.get(client,'/')

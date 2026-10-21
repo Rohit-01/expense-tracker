@@ -48,5 +48,13 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the PM2/Nginx update, backup, migration, 
 Run account/privacy checks in the production virtual environment:
 
 ```bash
-.venv/bin/python -m unittest test_production -v
+.venv/bin/python -m unittest discover -p 'test_*.py' -v
 ```
+
+## Sync your online owner account to Obsidian
+
+The production dashboard now has an owner-only **Obsidian sync** control. Generate a read-only token there after deploying this release. It expires after 90 days; replacing or revoking it blocks future downloads with that token. Pocket stores only its hash.
+
+The prepared Mac helper uses HTTPS and macOS Keychain to update only `ai zone/openai agent/Personal/Finance/Expense Ledger.md`. It validates the owner and generated Markdown before an atomic write, preserves the note on connection failures, and detects manual edits to a previously synced note. It does not upload local edits or need an SSH login. The local Pocket launcher stays single-user and does not overwrite a note managed by the VPS sync helper.
+
+See [OBSIDIAN_SYNC.md](OBSIDIAN_SYNC.md). Deployment, real token setup, and the periodic LaunchAgent are separate remaining steps; the code alone does not make your Mac sync automatically.

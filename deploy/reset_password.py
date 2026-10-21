@@ -23,13 +23,13 @@ def main():
     password = getpass.getpass('New password (at least 14 characters): ')
     if password != getpass.getpass('Repeat new password: '):
         raise SystemExit('Passwords did not match. Nothing changed.')
-    if input('Reset this password and sign out its sessions? Type yes: ') != 'yes':
+    if input('Reset this password and revoke its sessions and sync token? Type yes: ') != 'yes':
         raise SystemExit('Nothing changed.')
     try:
         accounts.reset_password(username, password)
     except AuthError as error:
         raise SystemExit(str(error)) from None
-    print('Password reset. All sessions for that account were revoked. No app restart is needed.')
+    print('Password reset. All sessions and sync tokens for that account were revoked. No app restart is needed.')
 
 
 if __name__ == '__main__':

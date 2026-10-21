@@ -1,0 +1,2 @@
+# Mac helper only; not needed by the VPS or the local Pocket launcher.
+keyring==25.7.0

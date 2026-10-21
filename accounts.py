@@ -15,6 +15,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 SESSION_SECONDS = 7 * 24 * 60 * 60
 ANONYMOUS_SECONDS = 30 * 60
 COOKIE = '__Host-pocket-session'
+SYNC_SECONDS = 90 * 24 * 60 * 60
+SYNC_SCOPE = 'obsidian:read'
 
 
 class AuthError(Exception):
@@ -60,6 +62,10 @@ class Accounts:
                     kind TEXT NOT NULL, address TEXT NOT NULL, happened_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS attempt_lookup ON attempts(kind,address,happened_at);
+                CREATE TABLE IF NOT EXISTS sync_tokens (
+                    user_id TEXT PRIMARY KEY REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE,
+                    scope TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+                );
             ''')
         os.chmod(self.db, 0o600)
         self.import_owner(auth_file)
@@ -185,3 +191,45 @@ class Accounts:
                 raise AuthError('Account not found. Nothing changed.')
             conn.execute('UPDATE users SET password_hash=? WHERE id=?', (password_hash, user['id']))
             conn.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+            conn.execute('DELETE FROM sync_tokens WHERE user_id=?', (user['id'],))
+
+    @staticmethod
+    def _sync_owner(conn, user_id):
+        owner = conn.execute('SELECT id, is_owner FROM users WHERE id=? AND is_owner=1', (user_id,)).fetchone()
+        if not owner:
+            raise AuthError('Obsidian sync is available only to the owner.', 403)
+        return dict(owner)
+
+    def sync_status(self, user_id):
+        with self.connect() as conn:
+            self._sync_owner(conn, user_id)
+            row = conn.execute('SELECT created_at, expires_at FROM sync_tokens WHERE user_id=?', (user_id,)).fetchone()
+        return {'active': bool(row and row['expires_at'] > int(time.time())),
+                'createdAt': row['created_at'] if row else None,
+                'expiresAt': row['expires_at'] if row else None, 'scope': SYNC_SCOPE}
+
+    def create_sync_token(self, user_id):
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            self._sync_owner(conn, user_id)
+            token, now = 'pocket_sync_' + secrets.token_urlsafe(32), int(time.time())
+            conn.execute('INSERT OR REPLACE INTO sync_tokens VALUES (?,?,?,?,?)',
+                         (user_id, digest(token), SYNC_SCOPE, now, now + SYNC_SECONDS))
+        # The raw credential is returned exactly once and is never persisted.
+        return {'token': token, 'active': True, 'createdAt': now,
+                'expiresAt': now + SYNC_SECONDS, 'scope': SYNC_SCOPE}
+
+    def revoke_sync_token(self, user_id):
+        with self.connect() as conn:
+            self._sync_owner(conn, user_id)
+            conn.execute('DELETE FROM sync_tokens WHERE user_id=?', (user_id,))
+
+    def sync_owner(self, token):
+        if not isinstance(token, str) or not re.fullmatch(r'pocket_sync_[A-Za-z0-9_-]{43}', token):
+            return None
+        with self.connect() as conn:
+            row = conn.execute('''SELECT users.id, users.is_owner FROM sync_tokens
+                JOIN users ON users.id=sync_tokens.user_id
+                WHERE token_hash=? AND scope=? AND expires_at>? AND users.is_owner=1''',
+                (digest(token), SYNC_SCOPE, int(time.time()))).fetchone()
+        return dict(row) if row else None
