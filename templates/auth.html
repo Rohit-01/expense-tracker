@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="lifeos-token" content="{{ csrf }}">
+  <title>{{ 'Create your account' if signup else 'Welcome back' }} · Pocket</title>
+  <link rel="stylesheet" href="/style.css"><script src="/auth.js" defer></script>
+</head>
+<body class="auth-page">
+  <header class="auth-header">
+    <a class="brand" href="/login" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a>
+    <span class="auth-header-note">A little clarity, every day.</span>
+  </header>
+  <main class="auth-layout">
+    <section class="auth-story" aria-labelledby="story-heading">
+      <p class="eyebrow">LESS TO KEEP IN YOUR HEAD</p>
+      <h1 id="story-heading">Keep track.<br>Let it go.</h1>
+      <p class="auth-description">The everyday things add up. Give your spending, money lent, and little reminders a place of their own.</p>
+      <div class="auth-journal" aria-hidden="true">
+        <div class="auth-journal-heading"><span>YOUR EVERYDAY, ORGANIZED</span><span>↗</span></div>
+        <div class="auth-journal-row"><span class="entry-icon">↗</span><div><strong>Something you bought</strong><span>Keep the little details</span></div><span class="auth-check">✓</span></div>
+        <div class="auth-journal-row"><span class="entry-icon loan">↙</span><div><strong>Money you lent</strong><span>Know what’s coming back</span></div><span class="auth-check">✓</span></div>
+        <div class="auth-journal-row"><span class="entry-icon reminder">◷</span><div><strong>A thing to remember</strong><span>Make room for everything else</span></div><span class="auth-check">✓</span></div>
+      </div>
+      <p class="auth-private">Your account. Your own private journal.</p>
+    </section>
+    <section class="auth-card" aria-labelledby="auth-heading">
+      <p class="eyebrow">{{ 'A FRESH PAGE' if signup else 'YOUR JOURNAL IS HERE' }}</p>
+      <h2 id="auth-heading">{{ 'Make it yours.' if signup else 'Welcome back.' }}</h2>
+      <p class="auth-card-description">{{ 'Create an account to start keeping track.' if signup else 'Log in to pick up where you left off.' }}</p>
+      <form id="auth-form" action="{{ '/signup' if signup else '/login' }}" method="post">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="{{ 32 if signup else 100 }}" {% if signup %}minlength="3" pattern="[A-Za-z0-9_.\-]{3,32}" aria-describedby="username-help"{% endif %} placeholder="Your username">
+        {% if signup %}<p class="field-note" id="username-help">3–32 letters, numbers, dots, underscores, or hyphens.</p>{% endif %}
+        <label for="password">Password</label>
+        <div class="password-field"><input id="password" name="password" type="password" autocomplete="{{ 'new-password' if signup else 'current-password' }}" required {% if signup %}minlength="14" aria-describedby="password-help"{% endif %} maxlength="1024" placeholder="{{ 'At least 14 characters' if signup else 'Your password' }}"><button type="button" class="password-toggle" data-toggle="password" aria-label="Show password" aria-pressed="false">Show</button></div>
+        {% if signup %}
+        <p class="field-note" id="password-help">Use at least 14 characters. A memorable passphrase works well.</p>
+        <label for="confirmation">Confirm password</label>
+        <div class="password-field"><input id="confirmation" name="confirmation" type="password" autocomplete="new-password" required minlength="14" maxlength="1024" placeholder="One more time"><button type="button" class="password-toggle" data-toggle="confirmation" aria-label="Show confirmation password" aria-pressed="false">Show</button></div>
+        {% endif %}
+        <div id="auth-error" class="notice error" role="alert" tabindex="-1" hidden></div>
+        <button id="auth-submit" class="button primary auth-submit" type="submit">{{ 'Create account' if signup else 'Log in' }} <span aria-hidden="true">↗</span></button>
+        <noscript><p class="notice error">Enable JavaScript to securely log in or create an account.</p></noscript>
+      </form>
+      <p class="auth-switch">{{ 'Already have an account?' if signup else 'New to Pocket?' }} <a href="{{ '/login' if signup else '/signup' }}">{{ 'Log in' if signup else 'Create an account' }}</a></p>
+      <p class="auth-help">{{ 'Keep your password somewhere safe. Account recovery is handled by the site administrator.' if signup else 'Forgot your password? Contact the site administrator to reset it.' }}</p>
+    </section>
+  </main>
+  <footer class="auth-footer"><span>LifeOS Pocket</span><span>A little less mental clutter.</span></footer>
+</body>
+</html>

@@ -1,5 +1,6 @@
 # Financial data and exports stay outside Git.
 data/
+accounts/
 backups/
 vault-export/
 *.sqlite3
@@ -24,3 +25,4 @@ __pycache__/
 .DS_Store
 *.log
 preview.png
+*-preview.png

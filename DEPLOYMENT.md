@@ -1,299 +1,148 @@
-# Deploy Pocket from GitHub to your VPS
+# Pocket on your VPS: PM2 + Nginx
 
-Prepared for **Ubuntu 24.04**, a dedicated Linux account with sudo access, SSH on the standard port, and a domain you control. Replace `YOUR_GITHUB_USER`, `YOUR_VPS_USER`, `YOUR_VPS_IP`, and `pocket.yourdomain.com` throughout. Adapt firewall rules first if SSH uses a different port. These are instructions; no GitHub repository or VPS deployment has been created by this guide.
+Prepared for `pocket.mrox.in`, the existing `kayo` PM2 account, and a checkout under `/home/kayo/apps`. Commands below assume `/home/kayo/apps/pocket`; use the directory that actually contains `production.py`. These are instructions only: no GitHub push or VPS change has been performed.
 
-The production path is **Caddy → Gunicorn → Pocket → SQLite**. Browser access is protected by a username and password over HTTPS. The normal `server.py` and Mac launcher remain available for local use. Do not expose the local server directly to the internet.
+## Upgrade the existing app
 
-## 1. Push only the application code from your Mac
+Run PM2 as `kayo`, the same user who manages the existing apps. Preserve Pocket's current environment/storage values. This guide assumes the earlier example: `/home/kayo/.local/share/pocket/{data,auth.json,vault-export}`. Check the existing Pocket ecosystem file before proceeding; if you configured different paths, substitute them throughout. Do not point the release at an empty replacement data directory.
 
-Create a **private, empty** GitHub repository called `pocket`. Do not initialize it with a README, license, or .gitignore; those files already exist locally where applicable.
-
-Authenticate Git with your usual GitHub credentials. If you use GitHub CLI, run `gh auth login` and `gh auth setup-git`. Do not paste credentials into code or repository URLs. GitHub account passwords do not authenticate HTTPS Git pushes.
-
-In your Mac Terminal:
+1. Back up the current installation **before pulling**. Stop only Pocket to make the legacy file copy consistent; there will be brief downtime. Execute each step separately and stop if any command fails.
 
 ```bash
-cd '/Users/Rohit/Documents/Codex/2026-10-20/ma/outputs/expense-tracker'
-git init -b main
-git add .
-git status --short
-git diff --cached --stat
+cd /home/kayo/apps/pocket
+pm2 stop pocket
+umask 077
+pocket_storage="$HOME/.local/share/pocket"
+pocket_backup="$pocket_storage/backups/before-accounts-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$pocket_backup"
+cp -a "$pocket_storage/data" "$pocket_backup/data"
+install -m 600 "$pocket_storage/auth.json" "$pocket_backup/auth.json"
+git rev-parse HEAD > "$pocket_backup/code-revision.txt"
 ```
 
-The supplied `.gitignore` excludes the database, backups, your local `config.json`, login files, environments, and generated exports. **Check the staged list before committing.** If you previously committed private files, adding .gitignore alone does not remove them from Git history.
+This copies all current databases, including accounts if this is a later upgrade. Keep backups and credentials outside the Git checkout. The exported Markdown is regenerated from the databases; it is not the authoritative backup.
 
-Then:
-
-```bash
-git commit -m "Prepare Pocket for VPS deployment"
-git remote add origin https://github.com/YOUR_GITHUB_USER/pocket.git
-git push -u origin main
-```
-
-Use these initialization commands once only. Future code changes use `git add`, `git commit`, and `git push`.
-
-## 2. Point a subdomain to the VPS
-
-At your DNS provider, add an A record:
-
-| Type | Name | Value |
-| --- | --- | --- |
-| A | pocket | YOUR_VPS_IP |
-
-Use the actual subdomain in both the app environment and Caddy configuration below. Add an AAAA record only if your VPS has correctly configured public IPv6. Wait until DNS resolves to this VPS before requesting the HTTPS site.
-
-## 3. Prepare the VPS and GitHub access
-
-Connect from your Mac:
+2. Pull the release and install its dependencies into the existing virtual environment.
 
 ```bash
-ssh YOUR_VPS_USER@YOUR_VPS_IP
-```
-
-On the VPS:
-
-```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip curl ca-certificates gnupg ufw
-python3 -c "import sqlite3; print(sqlite3.sqlite_version)"
-```
-
-The last command verifies Python's SQLite support. No separate database service is required.
-
-If this VPS does not already have read access to your private repository, create a dedicated SSH deploy key:
-
-```bash
-ssh-keygen -t ed25519 -f "$HOME/.ssh/pocket_github" -C 'pocket-vps-readonly'
-cat "$HOME/.ssh/pocket_github.pub"
-```
-
-Add **only the public key** to GitHub → repository → Settings → Deploy keys → Add deploy key. Leave **Allow write access unchecked**. Keep the private key on the VPS. If you set a key passphrase, load it into an SSH agent when pulling; do not put it in scripts. Verify GitHub's SSH host fingerprint against its official documentation when first connecting.
-
-Clone the code as your normal deployment user, not as the Pocket service account:
-
-```bash
-sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 755 /opt/pocket
-git -c core.sshCommand="ssh -i $HOME/.ssh/pocket_github -o IdentitiesOnly=yes" clone git@github.com:YOUR_GITHUB_USER/pocket.git /opt/pocket
-cd /opt/pocket
-git config core.sshCommand "ssh -i $HOME/.ssh/pocket_github -o IdentitiesOnly=yes"
-python3 -m venv .venv
+git pull --ff-only
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest test_production -v
 ```
 
-If GitHub SSH access already uses another configured key, omit the custom `core.sshCommand` options and use your existing setup.
+Tests use temporary synthetic accounts/records, not your production data. There is no JavaScript build step.
 
-## 4. Create the service account, persistent storage, and login
-
-On the VPS:
+3. Keep the current `POCKET_DOMAIN`, `POCKET_DATA_DIR`, `POCKET_AUTH_FILE`, and `POCKET_VAULT`. Restart Pocket:
 
 ```bash
-sudo useradd --system --user-group --home-dir /var/lib/pocket --shell /usr/sbin/nologin pocket
-sudo install -d -o pocket -g pocket -m 700 /var/lib/pocket
-sudo -u pocket /opt/pocket/.venv/bin/python /opt/pocket/deploy/create_login.py
+pm2 restart pocket
+pm2 status pocket
+pm2 logs pocket --lines 50 --nostream
+curl -fsS -H 'Host: pocket.mrox.in' http://127.0.0.1:8768/healthz
 ```
 
-Enter your chosen Pocket username and a unique password at the prompts. The password is hidden while typing and only its scrypt hash is saved. It is not a GitHub password. The credential file is outside the code checkout at `/var/lib/pocket/auth.json`.
+The first successful startup automatically imports the existing username and scrypt password hash from `auth.json`, assigns it ownership of your existing `ledger.sqlite3`, and creates `accounts.sqlite3`. This is transactional and repeatable. Missing credentials or an account database without an owner stop startup; public signup cannot claim your old records. No separate migration command is needed.
 
-Install the environment file:
+After migration, `auth.json` remains a protected rollback artifact and no longer controls login. Do not rerun `create_login.py` to change a migrated password. Sessions persist through PM2 restarts.
+
+If you edited the ecosystem file, restart from that file instead of using just the process name:
 
 ```bash
-sudo install -o root -g pocket -m 640 deploy/pocket.env.example /etc/pocket.env
-sudo nano /etc/pocket.env
+pm2 restart "$HOME/.config/pocket/ecosystem.config.js" --only pocket
 ```
 
-Set `POCKET_DOMAIN` to the real domain, without `https://` or a trailing slash. Keep these storage paths unless you deliberately adjust the service permissions too:
+Use your actual ecosystem path if different. `deploy/ecosystem.config.js` is an example for comparison; do not copy it over an existing config without preserving your storage paths. Keep one Gunicorn worker and one PM2 instance. The per-ledger Markdown writer uses process-local locks.
 
-```ini
-POCKET_DOMAIN=pocket.yourdomain.com
-POCKET_DATA_DIR=/var/lib/pocket/data
-POCKET_AUTH_FILE=/var/lib/pocket/auth.json
-POCKET_VAULT=/var/lib/pocket/vault-export
-PYTHONDONTWRITEBYTECODE=1
-```
+4. Check Pocket's existing Nginx site. The app itself no longer sends `WWW-Authenticate`. If Nginx also has `auth_basic`, remove it from Pocket's location, or set `auth_basic off;` there to override inherited settings. `deploy/nginx-pocket-location.conf` is a replacement for Pocket's existing `location /` block. Keep the current HTTPS certificate directives and HTTP-to-HTTPS redirect. Keep other apps' server blocks unchanged.
 
-Data stays in `/var/lib/pocket/`, separate from `/opt/pocket/`. A Git pull will not replace it.
-
-## 5. Transfer existing records, if you have any
-
-Skip this section for a fresh, empty ledger. The Git repository deliberately contains no financial records.
-
-Before migrating, pause entering new data into the local app. On your Mac, create a consistent database snapshot:
+Only if Nginx configuration changed:
 
 ```bash
-cd '/Users/Rohit/Documents/Codex/2026-10-20/ma/outputs/expense-tracker'
-python3 deploy/backup.py --source data/ledger.sqlite3 --directory backups
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-The command prints the snapshot filename. Substitute that path below:
+The proxy must overwrite forwarded headers, as the example does. Gunicorn stays bound to `127.0.0.1:8768`. Do not expose that port externally.
+
+5. Verify through the public site:
 
 ```bash
-scp 'backups/ACTUAL_SNAPSHOT_FILENAME.sqlite3' YOUR_VPS_USER@YOUR_VPS_IP:pocket-migration.sqlite3
+curl -fsS https://pocket.mrox.in/healthz
+curl -sS -o /dev/null -w '%{http_code}\n' https://pocket.mrox.in/login
+curl -sS -o /dev/null -w '%{http_code}\n' https://pocket.mrox.in/api/state
 ```
 
-On the VPS, **before the first service start**:
+Expect `{"status":"ok"}`, `200`, and `401`, respectively. Open a private browser window: `/` should redirect to a branded login page with no browser popup. Your original username/password should show your existing expenses, loans, repayments, and reminders. Check the owner ledger before inviting registrations. Sign up a separate test account and verify it starts empty; log out and confirm protected pages are inaccessible.
+
+If the popup persists, inspect the Pocket-specific Nginx `auth_basic` settings. If the site shows 502, inspect Pocket's PM2 logs for startup/configuration errors. A successful `/healthz` checks the running process; also check login and records to validate migration.
+
+After successful verification:
 
 ```bash
-sudo install -d -o pocket -g pocket -m 700 /var/lib/pocket/data
-sudo test ! -e /var/lib/pocket/data/ledger.sqlite3 && sudo install -o pocket -g pocket -m 600 "$HOME/pocket-migration.sqlite3" /var/lib/pocket/data/ledger.sqlite3
+pm2 save
 ```
 
-If the destination already exists, this command will not replace it. Stop and make a deliberate restore/merge plan instead. After migration, use the VPS app for all new records. Do not continue entering separate records in the old local tracker. Remove staging copies only after you verify the VPS records and have a backup.
+Use your existing PM2 boot service. Never run `pm2 restart all` for a Pocket update. Later ordinary code-only updates need `git pull --ff-only` and `pm2 restart pocket`; stop Pocket before changing dependencies. Future database-changing releases may need their own migration steps.
 
-## 6. Run Pocket as a persistent service
+## Accounts and Obsidian privacy
 
-On the VPS:
+| Location, relative to POCKET_DATA_DIR | Purpose |
+| --- | --- |
+| `accounts.sqlite3` | Usernames, scrypt hashes, hashed session credentials, CSRF tokens, rate-limit counters |
+| `ledger.sqlite3` | Your existing owner records |
+| `accounts/<UUID>/ledger.sqlite3` | One other account's private records |
+| `accounts/<UUID>/export/` | That account's separate generated Markdown |
+
+Only the owner ledger writes to `POCKET_VAULT/ai zone/openai agent/Personal/Finance/Expense Ledger.md`. Other users never write there. Username, password hash, sessions, and other account details are not written to the financial notes. User IDs are generated by the server and selected from the authenticated session, not URL parameters or form inputs.
+
+The VPS export and your Mac's Obsidian vault are separate until a sync mechanism is configured. Sync **only the owner `POCKET_VAULT` export**, never the entire data directory or another user's export. `/api/ledger.md`, `/api/export.json`, and `/api/reminder.ics` return only the signed-in user's records. The old Basic-auth curl download method no longer works: downloads now require a browser session. Automated Mac sync would need a separate, narrowly scoped design; this release does not set it up.
+
+Anyone can register with a unique username and a password of at least 14 characters. Sessions expire after seven days. Persistent limits allow ten failed logins per IP per five minutes and five successful signups per IP per hour; users sharing a public IP share those limits. No email address is collected and there is no email recovery.
+
+## Administrator password reset
+
+Run this interactively as the data-owning VPS user. Enter the username and new password at the prompts, not in a shell command:
 
 ```bash
-cd /opt/pocket
-sudo install -m 644 deploy/pocket.service /etc/systemd/system/pocket.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now pocket
-sudo systemctl status pocket --no-pager
-curl -fsS -H 'Host: pocket.yourdomain.com' http://127.0.0.1:8768/healthz
+cd /home/kayo/apps/pocket
+.venv/bin/python deploy/reset_password.py --data-dir "$HOME/.local/share/pocket/data"
 ```
 
-Replace the Host header with your domain. Expected response: `{"status":"ok"}`. The health endpoint contains no records; data endpoints require HTTPS and login.
+It asks for confirmation, updates that account only, and revokes all its sessions immediately. No restart is required. Verify the requester's identity before using it for another person.
 
-This service starts on boot and restarts on failure. It uses **one Gunicorn worker with four threads**. Keep one worker: the current ledger-export lock and request token live within that worker. Restart the service for deployments; do not use overlapping worker reloads.
+## Back up and restore
 
-## 7. Install Caddy and enable HTTPS
-
-The following installs Caddy from its official stable Debian/Ubuntu repository. If Caddy is already installed, skip installation and add the new site without replacing other sites.
+Complete backup of the registry and all registered users' ledgers:
 
 ```bash
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-sudo chmod o+r /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update
-sudo apt install -y caddy
+.venv/bin/python deploy/backup.py \
+  --data-dir "$HOME/.local/share/pocket/data" \
+  --directory "$HOME/.local/share/pocket/backups"
 ```
 
-If another web server already owns ports 80/443, integrate Pocket with that server or plan a switch first; do not stop existing sites blindly.
+The command prints a snapshot directory. A `manifest.json` appears only after every database passes an integrity check. Keep snapshots private: they contain all users' financial data and password hashes. Copy them securely off the VPS. Generated Markdown is omitted and regenerated when the app opens each ledger.
 
-Edit the Caddyfile:
+The SQLite online backup API permits backups while running. It captures the account registry first, then each ledger at a consistent point for that database; it is not a simultaneous snapshot across all users. Accounts registered afterward appear in the next backup. For a precisely timed whole-installation snapshot, stop only Pocket during the backup and restart afterward. Replace old single-file `--source` backup schedules with the complete `--data-dir` invocation; `--source` remains for legacy single-ledger use only.
+
+Restore into a **new, nonexistent** directory for verification first:
 
 ```bash
-sudo nano /etc/caddy/Caddyfile
+.venv/bin/python deploy/restore.py \
+  --snapshot "$HOME/.local/share/pocket/backups/pocket-REPLACE_WITH_SNAPSHOT_TIMESTAMP" \
+  --data-dir "$HOME/.local/share/pocket/data-restored"
 ```
 
-Add the following site block (also provided in `deploy/Caddyfile`), with your real domain:
+Restore verifies ownership mappings and SQLite integrity, and revokes all saved sessions. It refuses to overwrite any existing destination. To use the restored data, stop Pocket, change `POCKET_DATA_DIR` in the ecosystem file to the restored path, preserve `POCKET_VAULT`, then restart from that ecosystem file. Keep the prior data directory until verification is complete. A legacy snapshot without `accounts.sqlite3` also needs the matching old `auth.json` to establish the owner.
 
-```caddyfile
-pocket.yourdomain.com {
-    reverse_proxy 127.0.0.1:8768
-}
-```
+Do not assume reverting Git restores accounts or money records. Before undoing a release that accepted new writes, take a complete backup; restoring an older snapshot would omit those later writes. The pre-upgrade code revision, databases, and protected legacy credentials form the rollback set for the initial migration.
 
-Pocket handles the login itself. Caddy forwards HTTPS requests to its private local port. The app trusts forwarded protocol/client information only from this loopback proxy arrangement; do not bind Gunicorn to `0.0.0.0`.
+## New installations only
 
-For a VPS using standard SSH port 22, configure the host firewall:
+For an existing deployment, skip this section. Clone your GitHub repository into the chosen checkout, create `.venv` using `python3 -m venv .venv`, and install `requirements.txt`. Choose a private storage directory outside the checkout. Bootstrap the owner once with `deploy/create_login.py --output /your/private/storage/auth.json`. Set all four `POCKET_*` values in the ecosystem file, then use `pm2 start /path/to/ecosystem.config.js --only pocket`. Route the domain through its own HTTPS Nginx server block and verify as above.
 
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw status
-sudo ufw enable
-```
-
-If SSH uses another port, allow that actual port **before** enabling UFW. Preserve any firewall rules needed by existing services. In your VPS provider's firewall, also permit web traffic on 80/443 and your SSH access. Do not open 8768 publicly.
-
-Validate and start/reload Caddy:
-
-```bash
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl enable --now caddy
-sudo systemctl reload caddy
-```
-
-With correct DNS and reachable ports, Caddy obtains and renews the HTTPS certificate automatically.
-
-## 8. Open and verify the production app
-
-Open **https://pocket.yourdomain.com** in your browser. Enter the username/password created in step 4. This is a browser login prompt, not a custom account-registration screen. On a shared computer, use a private browser window and close it when finished; browsers can retain HTTP Basic credentials.
-
-Verify unauthenticated access is blocked:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://pocket.yourdomain.com/api/state
-curl -s -o /dev/null -w '%{http_code}\n' https://pocket.yourdomain.com/api/export.json
-```
-
-Both should return **401**. Enter a real expense, refresh, and verify it is still present. If you migrated records, check the expense total and outstanding-loan balances before entering more data. Restart Pocket and confirm persistence:
-
-```bash
-sudo systemctl restart pocket
-sudo systemctl is-active pocket caddy
-sudo systemctl is-enabled pocket caddy
-```
-
-This confirms service status and boot configuration. To verify recovery after an actual VPS reboot, schedule a reboot when it will not interrupt other workloads, then test the site again. A single VPS can still have downtime during maintenance or provider outages.
-
-If startup fails, inspect these logs; do not paste secrets or personal record contents into public issues:
-
-```bash
-sudo journalctl -u pocket -n 60 --no-pager
-sudo journalctl -u caddy -n 60 --no-pager
-```
-
-## 9. Enable backups
-
-```bash
-cd /opt/pocket
-sudo install -m 644 deploy/pocket-backup.service /etc/systemd/system/pocket-backup.service
-sudo install -m 644 deploy/pocket-backup.timer /etc/systemd/system/pocket-backup.timer
-sudo systemctl daemon-reload
-sudo systemctl start pocket-backup.service
-sudo systemctl enable --now pocket-backup.timer
-systemctl list-timers pocket-backup.timer --no-pager
-```
-
-The timer makes a consistent daily SQLite snapshot, with an integrity check, under `/var/lib/pocket/backups/`. It runs around 02:15–02:25 UTC (07:45–07:55 India time) and catches up after downtime. Backups are not automatically deleted. Plan retention and copy backups securely off the VPS; same-server backups do not protect against loss of the VPS. Test a restore into a separate temporary database before relying on your backup process.
-
-## 10. Bring the ledger into Obsidian
-
-The VPS exports a note under:
-
-```text
-/var/lib/pocket/vault-export/ai zone/openai agent/Personal/Finance/Expense Ledger.md
-```
-
-The interface says **Ledger exported on VPS**. That means a server-side file was written; it does **not** mean your Mac has received it.
-
-You can get a fresh, authenticated Markdown export at:
-
-```text
-https://pocket.yourdomain.com/api/ledger.md
-```
-
-For an immediate manual update, download it after signing in and place it at `ai zone/openai agent/Personal/Finance/Expense Ledger.md` in your Mac's vault. Preserve any manual changes before replacing the generated note. Do not run the old local tracker as a second writer to that same note after switching to the VPS.
-
-Automatic transfer to your Mac is a separate setup: configure a narrowly scoped SSH pull or authenticated download on the Mac, with credentials held securely outside Git. Your Mac then refreshes the note while online. The production files in this guide do not claim or configure that recurring Mac sync.
-
-Calendar export continues to work. Hosting does not add push notifications; imported calendar events still require a calendar app and do not automatically track later edits in Pocket.
-
-## Future code updates
-
-On your Mac, commit and push your changes. On the VPS, first make a backup, then pull and restart:
-
-```bash
-sudo systemctl start pocket-backup.service
-cd /opt/pocket
-git pull --ff-only origin main
-.venv/bin/python -m pip install -r requirements.txt
-sudo systemctl restart pocket
-sudo systemctl status pocket --no-pager
-```
-
-For dependency changes, stop Pocket before changing its live virtual environment, then start it again. If a deployment changes database schema, follow that release's migration/rollback steps instead of assuming a Git rollback will restore data. A short restart causes brief downtime. Refresh already-open pages afterward to obtain the new request token.
-
-If service templates change, install the changed unit files and run `sudo systemctl daemon-reload` before restarting. If Caddy config changes, validate and reload Caddy. Your database, login, environment, and exports remain outside the repository.
+The original `deploy/pocket.service` and Caddy sample remain alternatives for separate installations. This deployment uses PM2 and Nginx; do not enable a second service on port 8768. The local Mac `Launch Pocket.command` continues to run a single-user loopback app without public accounts.
 
 ## References
 
-- GitHub: [Add local code to GitHub](https://docs.github.com/en/migrations/importing-source-code/using-the-command-line-to-import-source-code/adding-locally-hosted-code-to-github), [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys), [SSH fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
-- Flask: [Gunicorn deployment](https://flask.palletsprojects.com/en/stable/deploying/gunicorn/).
-- Caddy: [installation](https://caddyserver.com/docs/install), [automatic HTTPS](https://caddyserver.com/docs/automatic-https).
-- systemd: [service configuration](https://www.freedesktop.org/software/systemd/man/257/systemd.service.html).
+- [PM2 ecosystem configuration and selecting one process](https://pm2.keymetrics.io/docs/usage/application-declaration/)
+- [Nginx Basic authentication and overriding inherited authentication](https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html)
+- [Flask security guidance: cookies, CSRF, hosts, and headers](https://flask.palletsprojects.com/en/stable/web-security/)

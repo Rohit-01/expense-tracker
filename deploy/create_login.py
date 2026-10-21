@@ -30,4 +30,4 @@ fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, 'w') as output:
     output.write(payload)
 temporary.replace(args.output)
-print('Login saved. Restart pocket after changing an existing login.')
+print('Owner bootstrap saved. Start Pocket to import it once. After migration, use deploy/reset_password.py to change a password.')

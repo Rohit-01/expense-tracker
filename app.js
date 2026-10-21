@@ -2,6 +2,14 @@
 const $ = id => document.getElementById(id);
 let state = {entries: [], repayments: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null;
 let toastTimer;
+const expectedAccount = document.querySelector('meta[name="pocket-account"]')?.content;
+let leaving = false;
+function leaveAccount(destination = '/login') {
+  leaving = true;
+  state = {entries: [], repayments: [], sync: {}};
+  document.body.replaceChildren(node('p', 'notice', 'Opening your account…'));
+  window.location.replace(destination);
+}
 const currency = new Intl.NumberFormat('en-IN', {style:'currency',currency:'INR',maximumFractionDigits:2});
 const fmt = minor => currency.format(minor / 100);
 function today() { return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
@@ -12,12 +20,14 @@ function left(entry) { return entry.amountMinor - state.repayments.filter(r=>r.e
 function isActive(entry) { return entry.dueAt && !entry.reminderDone && (entry.kind !== 'loan' || left(entry)>0); }
 function node(tag, className, text) { const el=document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
 function action(text, callback) { const el=node('button','text-button',text); el.type='button'; el.addEventListener('click',callback); return el; }
-function error(id,message) { $(id).textContent=message; $(id).hidden=!message; }
+function error(id,message) { if ($(id)) { $(id).textContent=message; $(id).hidden=!message; } }
 function toast(message) { clearTimeout(toastTimer); $('toast').textContent=message; $('toast').hidden=false; toastTimer=setTimeout(()=>$('toast').hidden=true,5000); }
 async function api(path, data) {
   const options=data?{method:'POST',headers:{'Content-Type':'application/json','X-LifeOS-Token':document.querySelector('meta[name="lifeos-token"]').content},body:JSON.stringify(data)}:{};
   const response=await fetch(path,options);
+  if (response.status === 401 && expectedAccount) { leaveAccount(); throw new Error('Please log in again.'); }
   const result=await response.json();
+  if (expectedAccount && result.account && result.account.id !== expectedAccount) { leaveAccount('/'); throw new Error('Account changed.'); }
   if(!response.ok) throw new Error(result.error || 'Could not save. Please try again.');
   return result;
 }
@@ -54,6 +64,12 @@ function editEntry(entry) {
   $('entry-heading').scrollIntoView({behavior:'smooth',block:'start'}); $('entry-title').focus({preventScroll:true});
 }
 function render() {
+  if (leaving) return;
+  if (state.account) {
+    $('account-controls').hidden = false;
+    $('account-name').textContent = state.account.username;
+    $('account-name').title = state.account.username;
+  }
   const month=today().slice(0,7), expenses=state.entries.filter(e=>e.kind==='expense'&&e.date.startsWith(month));
   const loans=state.entries.filter(e=>e.kind==='loan'&&left(e)>0), reminders=state.entries.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
   $('spent').textContent=fmt(expenses.reduce((s,e)=>s+e.amountMinor,0));
@@ -168,6 +184,17 @@ $('repay-form').addEventListener('submit',async event=>{
 });
 $('today').textContent=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'});
 resetForm();
-api('/api/state').then(data=>{state=data;render();}).catch(e=>{error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';});
-setInterval(()=>render(),60000);
+api('/api/state').then(data=>{state=data;render();}).catch(e=>{if(!leaving){error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';}});
+setInterval(()=>{if(expectedAccount&&!document.hidden) api('/api/state').then(data=>{state=data;render();}).catch(()=>{});else render();},60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden) api('/api/state').then(data=>{state=data;render();}).catch(()=>{});});
+if (expectedAccount) {
+  const channel = 'BroadcastChannel' in window ? new BroadcastChannel('pocket-auth') : null;
+  if (channel) channel.onmessage = () => leaveAccount('/');
+  $('logout').addEventListener('click', async () => {
+    const button = $('logout'); button.disabled = true;
+    try { await api('/logout', {}); channel?.postMessage('changed'); leaveAccount(); }
+    catch (e) { if (!leaving) { error('global-error', e.message); button.disabled = false; } }
+  });
+  window.addEventListener('pagehide', () => { document.documentElement.style.visibility = 'hidden'; });
+  window.addEventListener('pageshow', event => { if (event.persisted) leaveAccount('/'); });
+}

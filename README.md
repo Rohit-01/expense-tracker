@@ -1,6 +1,6 @@
 # LifeOS Pocket
 
-A private, local expense tracker for Rohit. Record expenses, money lent, partial repayments, and dated reminders. Currency is INR; reminder times use Asia/Kolkata.
+A private expense tracker for local use or a VPS with separate accounts. Record expenses, money lent, partial repayments, and dated reminders. Currency is INR; reminder times use Asia/Kolkata.
 
 For GitHub → VPS deployment with HTTPS, password protection, automatic restarts, and backups, follow [DEPLOYMENT.md](DEPLOYMENT.md). The separate production entry point is `production:create_app()`, run with Gunicorn; the Mac launcher below remains for local use.
 
@@ -20,7 +20,7 @@ The tracker is also usable in the Codex browser panel while the server is runnin
 
 Pocket does not send background notifications or messages. It does not create calendar events without your calendar import. Nothing is scheduled merely by trying an example.
 
-## Records and Obsidian
+## Local records and Obsidian
 
 - Original data: `data/ledger.sqlite3` next to server.py. Records survive refreshes and restarts.
 - Automatic Markdown view: `ai zone/openai agent/Personal/Finance/Expense Ledger.md` inside the configured Obsidian vault. The app reads it back after each write and shows whether syncing succeeded.
@@ -31,10 +31,22 @@ Pocket does not send background notifications or messages. It does not create ca
 
 To correct an entry, use **Edit**. Repayments are append-only in this version; ask LifeOS to help correct a mistaken repayment after confirming the exact record. There is no delete action.
 
-## Technical details
+## Local technical details
 
 Python 3.9+ with its standard library is required. No packages need installing. Start manually with `python3 server.py`. The Mac's bundled setup used `/opt/homebrew/bin/python3`.
 
 Vault path is stored in `config.json`. Set `vault` to an empty string to disable syncing. For isolated tests, use `python3 server.py --port 8769 --data-dir /path/to/test-data --vault ''`.
 
 Changing the port also requires using the corresponding URL; the double-click launcher defaults to 8768. The server uses strict Host checks, a per-run anti-forgery token for mutations, parameterized SQL, integer monetary values, and escaped Markdown/user text.
+
+## Public accounts on the VPS
+
+The production adapter now provides `/login`, `/signup`, and logout using persistent SQLite sessions. Your old `auth.json` login is imported once as the owner of the existing ledger. Each public signup receives a separate empty ledger; only the owner's records write to `POCKET_VAULT`. The local Mac launcher retains its single-user behavior.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the PM2/Nginx update, backup, migration, password reset, and restore steps. The new PM2 and Nginx examples are in `deploy/`. Do not commit actual databases, exports, credentials, or machine configuration.
+
+Run account/privacy checks in the production virtual environment:
+
+```bash
+.venv/bin/python -m unittest test_production -v
+```

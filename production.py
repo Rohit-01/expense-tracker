@@ -1,4 +1,4 @@
-"""Production HTTP adapter. Run only behind HTTPS using deploy/pocket.service."""
+"""Production adapter: one Gunicorn worker behind a trusted loopback HTTPS proxy."""
 import json
 import os
 from pathlib import Path
@@ -6,87 +6,74 @@ import re
 import secrets
 import sqlite3
 import threading
-import time
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, redirect, render_template, request
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.security import check_password_hash
 
+from accounts import Accounts, AuthError, COOKIE, account_directory
 from server import Ledger, ROOT, ical
 
 
 def create_app(settings=None):
-    settings = settings or os.environ
+    settings = settings if settings is not None else os.environ
     domain = settings.get('POCKET_DOMAIN', '').lower()
     if not re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?', domain) or '.' not in domain:
         raise RuntimeError('Set POCKET_DOMAIN to your domain, without https:// or a path.')
-    data_dir = Path(settings.get('POCKET_DATA_DIR', '/var/lib/pocket/data'))
-    auth_file = Path(settings.get('POCKET_AUTH_FILE', '/var/lib/pocket/auth.json'))
-    try:
-        auth = json.loads(auth_file.read_text())
-        username, password_hash = auth['username'], auth['passwordHash']
-        if not username or not password_hash.startswith('scrypt:'):
-            raise ValueError()
-    except (OSError, KeyError, ValueError, TypeError):
-        raise RuntimeError('Create the login first with deploy/create_login.py.') from None
-
-    ledger = Ledger(data_dir, settings.get('POCKET_VAULT', '/var/lib/pocket/vault-export'))
-    token = secrets.token_urlsafe(32)
+    # Databases, journals, and account exports must not be readable by other OS users.
+    os.umask(0o077)
+    data_dir = Path(settings.get('POCKET_DATA_DIR', '/var/lib/pocket/data')).expanduser().resolve()
+    configured_vault = settings.get('POCKET_VAULT', '/var/lib/pocket/vault-export')
+    owner_vault = Path(configured_vault).expanduser().resolve() if configured_vault else None
+    users_root = data_dir / 'accounts'
+    if owner_vault and (owner_vault == users_root or users_root in owner_vault.parents or owner_vault in users_root.parents):
+        raise RuntimeError('POCKET_VAULT and the private accounts directory must be separate trees.')
+    accounts = Accounts(data_dir, settings.get('POCKET_AUTH_FILE', '/var/lib/pocket/auth.json'))
     app = Flask(__name__, static_folder=None)
     app.config.update(MAX_CONTENT_LENGTH=16384, TRUSTED_HOSTS=[domain])
-    # One trusted proxy (Caddy); Gunicorn is bound only to 127.0.0.1.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
-    failed_logins = {}
-    login_lock = threading.Lock()
+    app.extensions['pocket_accounts'] = accounts
+    ledgers, ledger_lock = {}, threading.RLock()
+
+    def get_ledger(user):
+        # The only route to owner_vault is the server-assigned owner flag.
+        with ledger_lock:
+            if user['id'] not in ledgers:
+                directory = account_directory(data_dir, user)
+                vault = owner_vault if user['is_owner'] else directory / 'export'
+                ledgers[user['id']] = Ledger(directory, str(vault) if vault else '')
+            return ledgers[user['id']]
 
     def state():
-        result = ledger.state()
+        result = get_ledger(g.session).state()
         result['storageLocation'] = 'vps'
-        result['sync'] = {**result['sync'], 'remoteExport': True}
-        if result['sync']['ok']:
-            result['sync']['message'] = 'Ledger exported on VPS; Mac sync is separate.'
+        result['account'] = {'id': g.session['id'], 'username': g.session['username'], 'isOwner': bool(g.session['is_owner'])}
+        result['sync'] = {**result['sync'], 'remoteExport': True, 'ownerExport': bool(g.session['is_owner'])}
+        # Do not disclose filesystem paths or local exception details in the response.
+        result['sync']['message'] = ('Your ledger is exported on the VPS. Mac sync is separate.' if g.session['is_owner'] else 'Your private ledger is exported on the VPS.') if result['sync']['ok'] else 'Records saved. Ledger export needs administrator attention.'
         return result
 
     @app.before_request
     def protect():
-        # Health is deliberately data-free. Every other route requires login.
+        # Force host validation before an authentication response can short-circuit routing.
+        if request.host != domain:
+            return jsonify(error='Invalid host.'), 400
         if request.path == '/healthz' and request.method in ['GET', 'HEAD']:
             return None
         if not request.is_secure:
             return jsonify(error='Use the HTTPS address for Pocket.'), 403
-        address = request.remote_addr or 'unknown'
-        timestamp = time.monotonic()
-        with login_lock:
-            expired = [key for key, (_, since) in failed_logins.items() if timestamp - since >= 300]
-            for key in expired:
-                failed_logins.pop(key, None)
-            failures, since = failed_logins.get(address, (0, timestamp))
-            if failures >= 10:
-                return jsonify(error='Too many failed sign-in attempts. Try again in five minutes.'), 429, {'Retry-After':'300'}
-        credentials = request.authorization
-        valid = False
-        if credentials and credentials.type == 'basic' and credentials.username and credentials.password:
-            # Always verify the password to avoid revealing whether a username exists.
-            valid_password = check_password_hash(password_hash, credentials.password)
-            valid = secrets.compare_digest(credentials.username.encode(), username.encode()) and valid_password
-        if not valid:
-            if credentials:
-                with login_lock:
-                    # Bound memory even if exposed to a very large number of clients.
-                    if len(failed_logins) >= 4096 and address not in failed_logins:
-                        return jsonify(error='Sign-in temporarily busy. Try again later.'), 429
-                    count, since = failed_logins.get(address, (0, timestamp))
-                    failed_logins[address] = (count + 1, since)
-            return jsonify(error='Sign in to Pocket.'), 401, {'WWW-Authenticate':'Basic realm="Pocket", charset="UTF-8"'}
-        with login_lock:
-            failed_logins.pop(address, None)
+        g.session = accounts.session(request.cookies.get(COOKIE))
+        public = request.path in {'/login', '/signup', '/auth.js', '/style.css'}
+        if not public and not (g.session and g.session['user_id']):
+            if request.path == '/':
+                return redirect('/login', code=303)
+            return jsonify(error='Sign in to Pocket.'), 401
         if request.method not in ['GET', 'HEAD', 'OPTIONS']:
             if request.headers.get('Origin') != 'https://' + domain:
                 return jsonify(error='This request must come from your Pocket page.'), 403
-            supplied = request.headers.get('X-LifeOS-Token', '').encode()
-            if not secrets.compare_digest(supplied, token.encode()):
-                return jsonify(error='Refresh the page and try again.'), 403
+            supplied = request.headers.get('X-LifeOS-Token', '')
+            if not g.session or not secrets.compare_digest(supplied.encode(), g.session['csrf'].encode()):
+                return jsonify(error='Your session changed or expired. Refresh the page and try again.'), 403
 
     @app.after_request
     def headers(response):
@@ -96,23 +83,65 @@ def create_app(settings=None):
         response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         return response
 
+    def cookie_response(response, issued):
+        token, _, seconds = issued
+        response.set_cookie(COOKIE, token, max_age=seconds, secure=True, httponly=True, samesite='Lax', path='/')
+        return response
+
+    def json_body():
+        data = request.get_json()
+        if not isinstance(data, dict):
+            raise AuthError('Invalid request.')
+        return data
+
     @app.get('/healthz')
     def health():
         return jsonify(status='ok')
 
+    @app.route('/login', methods=['GET', 'POST'])
+    @app.route('/signup', methods=['GET', 'POST'])
+    def authenticate():
+        signup = request.path == '/signup'
+        if g.session and g.session['user_id']:
+            return redirect('/', code=303) if request.method == 'GET' else (jsonify(error='Log out before using another account.'), 409)
+        if request.method == 'GET':
+            issued = None
+            if not g.session:
+                issued = accounts.anonymous(request.cookies.get(COOKIE))
+                csrf = issued[1]
+            else:
+                csrf = g.session['csrf']
+            response = Response(render_template('auth.html', signup=signup, csrf=csrf), content_type='text/html; charset=utf-8')
+            return cookie_response(response, issued) if issued else response
+        data = json_body()
+        address, old_token = request.remote_addr or 'unknown', request.cookies.get(COOKIE)
+        if signup:
+            issued = accounts.register(data.get('username'), data.get('password'), data.get('confirmation'), address, old_token, get_ledger)
+        else:
+            issued = accounts.login(data.get('username'), data.get('password'), address, old_token)
+        return cookie_response(jsonify(redirect='/'), issued)
+
+    @app.post('/logout')
+    def logout():
+        accounts.revoke(request.cookies[COOKIE])
+        response = jsonify(redirect='/login')
+        response.delete_cookie(COOKIE, secure=True, httponly=True, samesite='Lax', path='/')
+        return response
+
     @app.get('/')
     def index():
-        page = (ROOT/'index.html').read_text().replace('__CSRF__', token)
-        page = page.replace('Saved on this Mac. Your journal stays with you.', 'Saved on your VPS. Your journal stays with you.')
+        # A per-session token also prevents stale tabs from writing into a new account.
+        page = (ROOT/'index.html').read_text().replace('__CSRF__', g.session['csrf'])
+        page = page.replace('</head>', '<meta name="pocket-account" content="' + g.session['id'] + '"></head>')
+        page = page.replace('Saved on this Mac. Your journal stays with you.', 'Saved in your private account on the VPS.')
         return Response(page, content_type='text/html; charset=utf-8')
 
     @app.get('/app.js')
-    def script():
-        return Response((ROOT/'app.js').read_bytes(), content_type='text/javascript; charset=utf-8')
-
+    @app.get('/auth.js')
     @app.get('/style.css')
-    def styles():
-        return Response((ROOT/'style.css').read_bytes(), content_type='text/css; charset=utf-8')
+    def asset():
+        mime = 'text/css' if request.path == '/style.css' else 'text/javascript'
+        return Response((ROOT/request.path[1:]).read_bytes(), content_type=mime + '; charset=utf-8')
 
     @app.get('/api/state')
     def get_state():
@@ -124,7 +153,7 @@ def create_app(settings=None):
 
     @app.get('/api/ledger.md')
     def export_markdown():
-        # Authenticated export of a fresh snapshot; never serves arbitrary files.
+        ledger = get_ledger(g.session)
         with ledger.lock:
             ledger.sync_note()
             if not ledger.sync['ok']:
@@ -134,29 +163,39 @@ def create_app(settings=None):
 
     @app.get('/api/reminder.ics')
     def calendar():
-        entry = next((e for e in ledger.state()['entries'] if e['id'] == request.args.get('id') and e['dueAt']), None)
+        entry = next((e for e in get_ledger(g.session).state()['entries'] if e['id'] == request.args.get('id') and e['dueAt']), None)
         if not entry:
             return jsonify(error='Reminder not found.'), 404
         return Response(ical(entry), content_type='text/calendar; charset=utf-8', headers={'Content-Disposition':'attachment; filename="lifeos-reminder.ics"'})
 
     @app.post('/api/<action>')
     def mutate(action):
+        ledger = get_ledger(g.session)
         methods = {'entries':ledger.save_entry, 'repayments':ledger.repay, 'reminders':ledger.toggle_reminder}
         if action not in methods:
             return jsonify(error='Not found.'), 404
-        data = request.get_json()
-        if not isinstance(data, dict):
-            return jsonify(error='Invalid request.'), 400
+        data = json_body()
         try:
             methods[action](data)
             return jsonify(state())
         except (ValueError, TypeError, OverflowError):
             return jsonify(error='Check the required fields, dates, and amounts. Repayments cannot exceed the amount outstanding.'), 400
-        except (OSError, sqlite3.Error):
-            return jsonify(error='Could not save. Check server storage and try again.'), 500
+
+    @app.errorhandler(AuthError)
+    def auth_error(error):
+        return jsonify(error=str(error)), error.status, ({'Retry-After': str(error.retry)} if error.retry else {})
+
+    @app.errorhandler(OSError)
+    @app.errorhandler(sqlite3.Error)
+    def storage_error(error):
+        return jsonify(error='Could not complete this request. Check server storage and try again.'), 503
 
     @app.errorhandler(HTTPException)
     def http_error(error):
         return jsonify(error=error.name), error.code
 
+    # Initialize the legacy ledger only after an owner has been safely established.
+    with accounts.connect() as conn:
+        owner = dict(conn.execute('SELECT id, is_owner FROM users WHERE is_owner=1').fetchone())
+    get_ledger(owner)
     return app
