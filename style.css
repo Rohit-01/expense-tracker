@@ -62,3 +62,16 @@
   .reminder-item .item-actions .text-button+.text-button{margin-left:0}
 }
 @media(max-width:380px){.account-controls{gap:6px}.account-name{max-width:90px;font-size:10px}.stat strong{font-size:clamp(15px,4.6vw,18px)}}
+
+/* Mandates are a first-class entry choice and journal view. */
+.type-picker{grid-template-columns:repeat(4,minmax(0,1fr))}
+.type-picker button{line-height:1.2}
+.mandates-section{margin-top:18px;padding-top:0;border-top:0}
+#mandate-hint{margin:8px 0 0}
+@media(max-width:760px){
+  .type-picker button{font-size:11px;padding:8px 2px}
+  .filters{display:grid;grid-template-columns:repeat(3,max-content);gap:3px 5px}
+  .filters button{padding:7px 8px}
+  .mandates-section{margin-top:18px}
+}
+@media(max-width:380px){.form-row{grid-template-columns:1fr;gap:0}}

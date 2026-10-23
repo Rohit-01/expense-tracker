@@ -21,23 +21,24 @@
     <div class="workspace">
       <section class="entry-panel" aria-labelledby="entry-heading">
         <div class="section-heading"><h2 id="entry-heading">Write it down</h2><span class="small-label">NEW ENTRY</span></div>
-        <label for="quick-entry" class="sr-only">Describe an expense, loan, or reminder</label>
+        <label for="quick-entry" class="sr-only">Describe an expense, loan, reminder, or mandate</label>
         <textarea id="quick-entry" class="quick-entry" rows="3" placeholder="Bought headphones for ₹2,500…"></textarea>
         <div class="quick-actions"><span>Write a sentence, then review the details.</span><button id="parse-entry" type="button" class="button compact">Fill details ↓</button></div>
         <div class="examples"><button type="button" data-example="expense">Try an expense</button><button type="button" data-example="loan">Try money lent</button><button type="button" data-example="reminder">Try a reminder</button></div>
         <p id="parse-hint" class="hint" aria-live="polite">Or fill in the fields below.</p>
         <form id="entry-form">
-          <div class="type-picker" role="group" aria-label="Entry type"><button type="button" data-kind="expense" aria-pressed="true">Expense</button><button type="button" data-kind="loan" aria-pressed="false">Money lent</button><button type="button" data-kind="reminder" aria-pressed="false">Reminder</button></div>
+          <div class="type-picker" role="group" aria-label="Entry type"><button type="button" data-kind="expense" aria-pressed="true">Expense</button><button type="button" data-kind="loan" aria-pressed="false">Money lent</button><button type="button" data-kind="reminder" aria-pressed="false">Reminder</button><button type="button" data-kind="mandate" aria-pressed="false">Mandate</button></div>
           <label id="title-label" for="entry-title">What was it for?</label><input id="entry-title" required maxlength="200" placeholder="e.g. Headphones, groceries, dinner" autocomplete="off">
           <div class="form-row">
-            <div id="amount-field"><label for="entry-amount">Amount · INR</label><input id="entry-amount" type="number" min="0.01" max="999999999.99" step="0.01" inputmode="decimal" required placeholder="0.00"></div>
-            <div id="date-field"><label for="entry-date">Entry date</label><input id="entry-date" type="date" required></div>
+            <div id="amount-field"><label id="amount-label" for="entry-amount">Amount · INR</label><input id="entry-amount" type="number" min="0.01" max="999999999.99" step="0.01" inputmode="decimal" required placeholder="0.00"></div>
+            <div id="date-field"><label id="date-label" for="entry-date">Entry date</label><input id="entry-date" type="date" required></div>
           </div>
+          <p id="mandate-hint" class="field-note" hidden>Repeats monthly. Dates on the 29th–31st use the last day of shorter months. Paid only records an expense; Pocket does not charge you.</p>
           <div id="person-field" hidden><label for="entry-person">Who did you lend to?</label><input id="entry-person" maxlength="100" placeholder="Person’s name" autocomplete="off"></div>
           <div id="category-field"><label for="entry-category">Category</label><select id="entry-category"></select><label for="entry-subcategory">Subcategory <span class="muted">(optional)</span></label><select id="entry-subcategory"></select><button id="open-category" type="button" class="text-button">Add category or subcategory</button></div>
-          <div class="reminder-toggle"><label class="checkbox-label"><input id="has-reminder" type="checkbox"> <span>Add a reminder</span></label><span id="reminder-optional">Optional</span></div>
+          <div id="reminder-toggle" class="reminder-toggle"><label class="checkbox-label"><input id="has-reminder" type="checkbox"> <span>Add a reminder</span></label><span id="reminder-optional">Optional</span></div>
           <div id="due-field" hidden><label for="entry-due">Remind me on · India time</label><input id="entry-due" type="datetime-local"><p class="field-note">Shown here when due. Download its calendar event for a scheduled alert.</p></div>
-          <label for="entry-notes">A note <span class="muted">(optional)</span></label><textarea id="entry-notes" rows="2" maxlength="2000" placeholder="Anything you’ll want to remember"></textarea>
+          <div id="notes-field"><label for="entry-notes">A note <span class="muted">(optional)</span></label><textarea id="entry-notes" rows="2" maxlength="2000" placeholder="Anything you’ll want to remember"></textarea></div>
           <div id="form-error" class="notice error" role="alert" hidden></div>
           <div class="form-actions"><button class="button primary" type="submit" id="save-entry">Save expense <span>↗</span></button><button class="button subtle" type="button" id="cancel-edit" hidden>Cancel edit</button></div>
         </form>
@@ -45,10 +46,10 @@
       </section>
       <section class="journal-panel" aria-labelledby="journal-heading">
         <div class="section-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2 id="journal-heading">Your journal</h2></div><span id="entry-count" class="count-badge">0 entries</span></div>
-        <div class="journal-toolbar"><div class="filters" role="group" aria-label="Filter journal"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="expense" aria-pressed="false">Expenses</button><button type="button" data-filter="loan" aria-pressed="false">Money lent</button><button type="button" data-filter="reminder" aria-pressed="false">Reminders</button></div><label class="sr-only" for="search">Search journal</label><input id="search" type="search" placeholder="Search your journal…"></div>
+        <div class="journal-toolbar"><div class="filters" role="group" aria-label="Filter journal"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="expense" aria-pressed="false">Expenses</button><button type="button" data-filter="loan" aria-pressed="false">Money lent</button><button type="button" data-filter="reminder" aria-pressed="false">Reminders</button><button type="button" data-filter="mandate" aria-pressed="false">Mandates</button></div><label class="sr-only" for="search">Search journal</label><input id="search" type="search" placeholder="Search your journal…"></div>
         <div id="journal-list"></div>
-        <section class="mandates-section" aria-labelledby="mandates-heading"><div class="section-heading"><div><p class="eyebrow">MONTHLY PLANS</p><h2 id="mandates-heading">Mandates</h2></div><button id="open-mandate" type="button" class="button compact">Add mandate</button></div><p class="field-note">Paid records a payment in Pocket; it does not charge your account.</p><div id="mandates-list"></div></section>
-        <section class="reminders-section" aria-labelledby="up-next-heading"><div class="section-heading"><h2 id="up-next-heading">On your radar</h2><span class="small-label">REMINDERS</span></div><div id="reminder-list"></div></section>
+        <section id="mandates-section" class="mandates-section" aria-labelledby="mandates-heading" hidden><div class="section-heading"><div><p class="eyebrow">MONTHLY PLANS</p><h2 id="mandates-heading">Mandates</h2></div><button id="open-mandate" type="button" class="button compact">Add mandate</button></div><p class="field-note">Paid records a payment in Pocket; it does not charge your account.</p><div id="mandates-list"></div></section>
+        <section id="reminders-section" class="reminders-section" aria-labelledby="up-next-heading"><div class="section-heading"><h2 id="up-next-heading">On your radar</h2><span class="small-label">REMINDERS</span></div><div id="reminder-list"></div></section>
       </section>
     </div>
     <footer><span>LifeOS Pocket</span><span>INR · India time · Made for your everyday</span></footer>

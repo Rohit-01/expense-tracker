@@ -37,19 +37,25 @@ function saved(message) {
 }
 function setKind(value) {
   kind=value;
+  const mandate=kind==='mandate';
   document.querySelectorAll('[data-kind]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.kind===kind)));
   $('amount-field').hidden=kind==='reminder'; $('entry-amount').required=kind!=='reminder';
   $('person-field').hidden=kind!=='loan'; $('entry-person').required=kind==='loan';
-  $('category-field').hidden=kind!=='expense';
-  $('title-label').textContent=kind==='reminder'?'What do you need to remember?':kind==='loan'?'What is the loan for?':'What was it for?';
-  $('entry-title').placeholder=kind==='reminder'?'e.g. Pay electricity bill':kind==='loan'?'e.g. Help with rent':'e.g. Headphones, groceries, dinner';
-  $('has-reminder').disabled=kind==='reminder';
+  $('category-field').hidden=!['expense','mandate'].includes(kind);
+  $('title-label').textContent=mandate?'Mandate name':kind==='reminder'?'What do you need to remember?':kind==='loan'?'What is the loan for?':'What was it for?';
+  $('entry-title').placeholder=mandate?'e.g. Netflix or monthly SIP':kind==='reminder'?'e.g. Pay electricity bill':kind==='loan'?'e.g. Help with rent':'e.g. Headphones, groceries, dinner';
+  $('amount-label').textContent=mandate?'Monthly amount · INR':'Amount · INR';
+  $('date-label').textContent=mandate?'First due date':'Entry date';
+  $('mandate-hint').hidden=!mandate;
+  $('reminder-toggle').hidden=mandate; $('notes-field').hidden=mandate;
+  $('has-reminder').disabled=kind==='reminder'||mandate;
   if(kind==='reminder') $('has-reminder').checked=true;
+  if(mandate) $('has-reminder').checked=false;
   $('reminder-optional').textContent=kind==='reminder'?'Required':'Optional';
   updateDue();
-  $('save-entry').textContent=editing?'Save changes':kind==='expense'?'Save expense ↗':kind==='loan'?'Save money lent ↗':'Save reminder ↗';
+  $('save-entry').textContent=editing?'Save changes':kind==='expense'?'Save expense ↗':kind==='loan'?'Save money lent ↗':kind==='reminder'?'Save reminder ↗':'Save mandate ↗';
 }
-function updateDue() { $('due-field').hidden=!$('has-reminder').checked; $('entry-due').required=$('has-reminder').checked; }
+function updateDue() { const active=kind!=='mandate'&&$('has-reminder').checked; $('due-field').hidden=!active; $('entry-due').required=active; }
 function fillSelect(select, values, selected, emptyLabel) {
   select.replaceChildren();
   if(emptyLabel!==undefined) { const option=node('option','',emptyLabel); option.value=''; select.append(option); }
@@ -109,15 +115,20 @@ function render() {
   $('reminder-count').textContent=String(reminders.length);
   const overdue=reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
   $('reminder-meta').textContent=overdue?`${overdue} past due · ready to review`:reminders.length?'A little nudge for later':'Nothing on your mind';
-  $('entry-count').textContent=`${state.entries.length} ${state.entries.length===1?'entry':'entries'}`;
+  const showingMandates=filter==='mandate';
+  $('entry-count').textContent=showingMandates?`${state.mandates.length} ${state.mandates.length===1?'mandate':'mandates'}`:`${state.entries.length} ${state.entries.length===1?'entry':'entries'}`;
+  $('journal-list').hidden=showingMandates;
+  $('mandates-section').hidden=!showingMandates;
+  $('reminders-section').hidden=showingMandates;
+  $('search').placeholder=showingMandates?'Search mandates…':'Search your journal…';
   $('sync-status').textContent=state.sync.ok?(state.sync.remoteExport?'All changes saved':'Synced to Obsidian'):state.sync.enabled?'Saved · export needs attention':state.storageLocation==='vps'?'Saved on your VPS':'Saved on this Mac';
   $('sync-status').classList.toggle('warning',!state.sync.ok);
   error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
   const query=$('search').value.trim().toLowerCase();
-  const list=state.entries.filter(e=>(filter==='all'||(filter==='reminder'?(e.kind==='reminder'||e.dueAt):e.kind===filter))&&[e.title,e.person,e.notes,e.category,e.subcategory||''].join(' ').toLowerCase().includes(query));
+  const list=showingMandates?[]:state.entries.filter(e=>(filter==='all'||(filter==='reminder'?(e.kind==='reminder'||e.dueAt):e.kind===filter))&&[e.title,e.person,e.notes,e.category,e.subcategory||''].join(' ').toLowerCase().includes(query));
   list.sort((a,b)=>b.date.localeCompare(a.date)||b.createdAt.localeCompare(a.createdAt));
   const journal=$('journal-list'); journal.replaceChildren();
-  if(!list.length) {
+  if(!showingMandates&&!list.length) {
     const box=node('div','empty'); box.append(node('span','empty-symbol','↗'),node('h3','',state.entries.length?'No matching entries':'A fresh page for your money'),node('p','',state.entries.length?'Try a different filter or search.':'Add your first expense, loan, or reminder. Small entries make the big picture clearer.')); journal.append(box);
   }
   for(const entry of list) {
@@ -161,8 +172,10 @@ function render() {
 }
 function renderMandates() {
   const list=$('mandates-list'); list.replaceChildren();
-  if(!state.mandates.length) { list.append(node('div','reminder-empty','No mandates yet. Add a monthly plan to keep track of payments.')); return; }
-  for(const mandate of state.mandates) {
+  const query=$('search').value.trim().toLowerCase();
+  const mandates=state.mandates.filter(m=>[m.title,m.category,m.subcategory].join(' ').toLowerCase().includes(query));
+  if(!mandates.length) { list.append(node('div','reminder-empty',state.mandates.length?'No matching mandates. Try another search.':'No mandates yet. Add a monthly plan to keep track of payments.')); return; }
+  for(const mandate of mandates) {
     const card=node('article','mandate-card');
     const heading=node('div','mandate-heading'), text=node('div');
     text.append(node('h3','',mandate.title),node('p','item-meta',`${fmt(mandate.amountMinor)} monthly · ${mandate.category}${mandate.subcategory?' → '+mandate.subcategory:''}`));
@@ -201,6 +214,11 @@ function openMandate(mandate=null) {
   updateSubcategories('mandate',mandate?.subcategory||'');
   $('mandate-dialog').showModal(); $('mandate-title').focus();
 }
+function startMandate() {
+  resetForm(); setKind('mandate');
+  $('entry-heading').scrollIntoView({behavior:'smooth',block:'start'});
+  $('entry-title').focus({preventScroll:true});
+}
 function openRepay(entry) {
   repayId=entry.id; $('repay-summary').textContent=`${entry.person} · ${fmt(left(entry))} outstanding`;
   $('repay-amount').value='';$('repay-amount').max=String(left(entry)/100);$('repay-date').value=today();$('repay-notes').value='';error('repay-error','');$('repay-dialog').showModal();$('repay-amount').focus();
@@ -213,7 +231,7 @@ function parseQuick() {
   const text=$('quick-entry').value.trim(); if(!text) { $('parse-hint').textContent='Write a short sentence first, or use the fields below.';return; }
   if(editing) { $('parse-hint').textContent='Finish or cancel your edit before starting a new quick entry.';return; }
   const lower=text.toLowerCase();
-  const parsedKind=/\b(remind|reminder)\b/.test(lower)?'reminder':/\b(lent|lend|loan|loaned)\b/.test(lower)?'loan':'expense';
+  const parsedKind=kind==='mandate'?'mandate':/\b(remind|reminder)\b/.test(lower)?'reminder':/\b(lent|lend|loan|loaned)\b/.test(lower)?'loan':'expense';
   $('entry-form').reset();setKind(parsedKind);$('entry-date').value=today();
   const marked=text.match(/(?:₹|rs\.?\s*|inr\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i)||text.match(/([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores))?\s*(?:rupees|inr)\b/i)||text.match(/\b(?:for|lent|lend|loaned|paid|spent)\s+([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i);
   if(marked&&parsedKind!=='reminder') { const multiplier={k:1000,lakh:100000,lakhs:100000,crore:10000000,crores:10000000};$('entry-amount').value=String(Math.round(Number(marked[1].replaceAll(',',''))*(multiplier[(marked[2]||'').toLowerCase()]||1)*100)/100); }
@@ -244,11 +262,16 @@ function parseQuick() {
     if(time) {hour=Number(time[1]);minute=Number(time[2]||0);if(time[3]) hour=hour%12+(time[3]==='pm'?12:0);}
     else assumedTime=true;
     if(hour<24&&minute<60) { $('has-reminder').checked=true;$('entry-due').value=inferredDay+'T'+String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');updateDue(); }
-  } else if(inferredDay&&parsedKind==='expense') $('entry-date').value=inferredDay;
+  } else if(inferredDay&&['expense','mandate'].includes(parsedKind)) $('entry-date').value=inferredDay;
   $('parse-hint').textContent='Draft filled. Check the amount, person, and dates before saving.'+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
 }
-document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',()=>setKind(b.dataset.kind)));
-document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));render();}));
+function selectFilter(value) {
+  filter=value; $('search').value='';
+  document.querySelectorAll('[data-filter]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.filter===value)));
+  render();
+}
+document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',()=>{if(editing&&b.dataset.kind==='mandate') resetForm();setKind(b.dataset.kind);}));
+document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>selectFilter(b.dataset.filter)));
 document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];$('quick-entry').focus();}));
 $('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',render);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
 for(const prefix of ['entry','mandate']) $(prefix+'-category').addEventListener('change',()=>updateSubcategories(prefix));
@@ -260,7 +283,7 @@ $('category-form').addEventListener('submit',async event=>{
   try {state=await api('/api/categories',{parent,name});$('category-dialog').close();render();if(parent){$('entry-category').value=parent;updateSubcategories('entry',name);}else{$('entry-category').value=name;updateSubcategories('entry');}toast('Category saved');}
   catch(e){error('category-error',e.message);}finally{$('save-category').disabled=false;}
 });
-$('open-mandate').addEventListener('click',()=>openMandate());
+$('open-mandate').addEventListener('click',startMandate);
 $('close-mandate').addEventListener('click',()=>$('mandate-dialog').close());
 $('mandate-form').addEventListener('submit',async event=>{
   event.preventDefault();error('mandate-error','');$('save-mandate').disabled=true;
@@ -270,6 +293,10 @@ $('mandate-form').addEventListener('submit',async event=>{
 $('entry-form').addEventListener('submit',async event=>{
   event.preventDefault();error('form-error',''); const button=$('save-entry');button.disabled=true;
   try {
+    if(kind==='mandate') {
+      state=await api('/api/mandates',{title:$('entry-title').value,amount:$('entry-amount').value,firstDueDate:$('entry-date').value,category:$('entry-category').value||'Other',subcategory:$('entry-subcategory').value});
+      resetForm(); selectFilter('mandate'); toast('Mandate added'); return;
+    }
     const wasEditing=Boolean(editing);
     state=await api('/api/entries',{id:editing,kind,title:$('entry-title').value,amount:$('entry-amount').value,person:$('entry-person').value,category:$('entry-category').value||'Other',subcategory:$('entry-subcategory').value,date:$('entry-date').value,dueAt:$('has-reminder').checked?$('entry-due').value:'',notes:$('entry-notes').value});
     resetForm();saved(wasEditing?'Entry updated':'Entry saved');
