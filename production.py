@@ -75,7 +75,9 @@ def create_app(settings=None):
                 return jsonify(error='This endpoint does not accept query parameters.'), 400
             return None
         g.session = accounts.session(request.cookies.get(COOKIE))
-        public = request.path in {'/login', '/signup', '/auth.js', '/style.css'}
+        public = request.path in {'/login', '/signup', '/auth.js', '/style.css',
+                                  '/manifest.webmanifest', '/icons/pocket-192.png',
+                                  '/icons/pocket-512.png', '/icons/apple-touch-icon.png'}
         if not public and not (g.session and g.session['user_id']):
             if request.path == '/':
                 return redirect('/login', code=303)
@@ -151,9 +153,15 @@ def create_app(settings=None):
     @app.get('/app.js')
     @app.get('/auth.js')
     @app.get('/style.css')
+    @app.get('/manifest.webmanifest')
+    @app.get('/icons/pocket-192.png')
+    @app.get('/icons/pocket-512.png')
+    @app.get('/icons/apple-touch-icon.png')
     def asset():
-        mime = 'text/css' if request.path == '/style.css' else 'text/javascript'
-        return Response((ROOT/request.path[1:]).read_bytes(), content_type=mime + '; charset=utf-8')
+        mime = ('text/css; charset=utf-8' if request.path == '/style.css' else
+                'application/manifest+json; charset=utf-8' if request.path == '/manifest.webmanifest' else
+                'image/png' if request.path.startswith('/icons/') else 'text/javascript; charset=utf-8')
+        return Response((ROOT/request.path[1:]).read_bytes(), content_type=mime)
 
     @app.get('/api/state')
     def get_state():
@@ -209,14 +217,20 @@ def create_app(settings=None):
     @app.post('/api/<action>')
     def mutate(action):
         ledger = get_ledger(g.session)
-        methods = {'entries':ledger.save_entry, 'repayments':ledger.repay, 'reminders':ledger.toggle_reminder}
+        methods = {'entries':ledger.save_entry, 'repayments':ledger.repay, 'reminders':ledger.toggle_reminder,
+                   'categories':ledger.save_category, 'mandates':ledger.save_mandate,
+                   'mandate-status':ledger.toggle_mandate, 'mandate-payments':ledger.pay_mandate}
         if action not in methods:
             return jsonify(error='Not found.'), 404
         data = json_body()
         try:
             methods[action](data)
             return jsonify(state())
-        except (ValueError, TypeError, OverflowError):
+        except ValueError as error:
+            if action in {'categories', 'mandates', 'mandate-status', 'mandate-payments'}:
+                return jsonify(error=str(error)), 400
+            return jsonify(error='Check the required fields, dates, and amounts. Repayments cannot exceed the amount outstanding.'), 400
+        except (TypeError, OverflowError):
             return jsonify(error='Check the required fields, dates, and amounts. Repayments cannot exceed the amount outstanding.'), 400
 
     @app.errorhandler(AuthError)

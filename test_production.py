@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import struct
 import tempfile
 import unittest
 from werkzeug.security import generate_password_hash
@@ -72,6 +73,27 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         response=client.get('/api/state',base_url=self.base,headers={'Authorization':'Basic dGVzdGVyOndyb25n'})
         self.assertEqual(response.status_code,401)
         self.assertNotIn('WWW-Authenticate',response.headers)
+
+    def test_home_screen_manifest_and_icons_are_public_without_exposing_records(self):
+        client = self.app.test_client()
+        for page in ['/login', '/signup', '/']:
+            response = self.get(client if page != '/' else self.client, page)
+            self.assertIn('rel="manifest" href="/manifest.webmanifest"', response.text)
+            self.assertIn('rel="apple-touch-icon" href="/icons/apple-touch-icon.png"', response.text)
+        response = self.get(client, '/manifest.webmanifest')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/manifest+json')
+        self.assertEqual(response.json['start_url'], '/')
+        self.assertEqual(response.json['display'], 'standalone')
+        self.assertEqual(response.json['scope'], '/')
+        for icon in response.json['icons']:
+            image = self.get(client, icon['src'])
+            self.assertEqual((image.status_code, image.mimetype), (200, 'image/png'))
+            self.assertEqual(image.data[:8], b'\x89PNG\r\n\x1a\n')
+            width, height = struct.unpack('>II', image.data[16:24])
+            self.assertEqual((width, height), tuple(map(int, icon['sizes'].split('x'))))
+        self.assertEqual(self.get(client, '/icons/apple-touch-icon.png').status_code, 200)
+        self.assertEqual(self.get(client, '/api/state').status_code, 401)
 
     def test_https_host_proxy_and_headers(self):
         self.assertEqual(self.client.get('/api/state',base_url='http://pocket.example.com').status_code,403)

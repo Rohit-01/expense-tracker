@@ -81,6 +81,8 @@ After successful verification:
 pm2 save
 ```
 
+The release also includes a web app manifest and Pocket home-screen icons. After the new version is live, open `/login` on a phone, add Pocket to the Home Screen, and verify that its icon opens the HTTPS domain and that login still works. The manifest and icons must remain publicly readable; financial APIs still require login. No separate phone package, build step, or native app store upload is involved.
+
 Use your existing PM2 boot service. Never run `pm2 restart all` for a Pocket update. Later ordinary code-only updates need `git pull --ff-only` and `pm2 restart pocket`; stop Pocket before changing dependencies. Future database-changing releases may need their own migration steps.
 
 ## Accounts and Obsidian privacy

@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="lifeos-token" content="__CSRF__">
+  <meta name="theme-color" content="#285442"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pocket">
+  <link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
   <title>Pocket · LifeOS</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
@@ -32,7 +34,7 @@
             <div id="date-field"><label for="entry-date">Entry date</label><input id="entry-date" type="date" required></div>
           </div>
           <div id="person-field" hidden><label for="entry-person">Who did you lend to?</label><input id="entry-person" maxlength="100" placeholder="Person’s name" autocomplete="off"></div>
-          <div id="category-field"><label for="entry-category">Category</label><select id="entry-category"><option>Shopping</option><option>Food &amp; groceries</option><option>Transport</option><option>Home &amp; bills</option><option>Health</option><option>Travel</option><option>Learning</option><option>Other</option></select></div>
+          <div id="category-field"><label for="entry-category">Category</label><select id="entry-category"></select><label for="entry-subcategory">Subcategory <span class="muted">(optional)</span></label><select id="entry-subcategory"></select><button id="open-category" type="button" class="text-button">Add category or subcategory</button></div>
           <div class="reminder-toggle"><label class="checkbox-label"><input id="has-reminder" type="checkbox"> <span>Add a reminder</span></label><span id="reminder-optional">Optional</span></div>
           <div id="due-field" hidden><label for="entry-due">Remind me on · India time</label><input id="entry-due" type="datetime-local"><p class="field-note">Shown here when due. Download its calendar event for a scheduled alert.</p></div>
           <label for="entry-notes">A note <span class="muted">(optional)</span></label><textarea id="entry-notes" rows="2" maxlength="2000" placeholder="Anything you’ll want to remember"></textarea>
@@ -45,6 +47,7 @@
         <div class="section-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2 id="journal-heading">Your journal</h2></div><span id="entry-count" class="count-badge">0 entries</span></div>
         <div class="journal-toolbar"><div class="filters" role="group" aria-label="Filter journal"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="expense" aria-pressed="false">Expenses</button><button type="button" data-filter="loan" aria-pressed="false">Money lent</button><button type="button" data-filter="reminder" aria-pressed="false">Reminders</button></div><label class="sr-only" for="search">Search journal</label><input id="search" type="search" placeholder="Search your journal…"></div>
         <div id="journal-list"></div>
+        <section class="mandates-section" aria-labelledby="mandates-heading"><div class="section-heading"><div><p class="eyebrow">MONTHLY PLANS</p><h2 id="mandates-heading">Mandates</h2></div><button id="open-mandate" type="button" class="button compact">Add mandate</button></div><p class="field-note">Paid records a payment in Pocket; it does not charge your account.</p><div id="mandates-list"></div></section>
         <section class="reminders-section" aria-labelledby="up-next-heading"><div class="section-heading"><h2 id="up-next-heading">On your radar</h2><span class="small-label">REMINDERS</span></div><div id="reminder-list"></div></section>
       </section>
     </div>
@@ -53,6 +56,8 @@
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
 <dialog id="repay-dialog"><form id="repay-form"><div class="section-heading"><h2>Record money received</h2><button type="button" id="close-repay" class="button subtle" aria-label="Close repayment">✕</button></div><p id="repay-summary"></p><label for="repay-amount">Amount received · INR</label><input id="repay-amount" type="number" min="0.01" step="0.01" required><label for="repay-date">Date received</label><input id="repay-date" type="date" required><label for="repay-notes">Note (optional)</label><input id="repay-notes" maxlength="500"><div id="repay-error" class="notice error" role="alert" hidden></div><p class="field-note">Only record money you have actually received.</p><button class="button primary" type="submit" id="save-repayment">Record repayment</button></form></dialog>
+<dialog id="category-dialog" aria-labelledby="category-heading"><form id="category-form"><div class="section-heading"><h2 id="category-heading">Add a category</h2><button type="button" id="close-category" class="button subtle" aria-label="Close category form">✕</button></div><label for="category-parent">Add under</label><select id="category-parent"></select><label for="category-name">Name</label><input id="category-name" maxlength="60" required autocomplete="off" placeholder="e.g. Diet Coke"><div id="category-error" class="notice error" role="alert" hidden></div><button id="save-category" class="button primary" type="submit">Save category</button></form></dialog>
+<dialog id="mandate-dialog" aria-labelledby="mandate-form-heading"><form id="mandate-form"><div class="section-heading"><h2 id="mandate-form-heading">Add monthly mandate</h2><button type="button" id="close-mandate" class="button subtle" aria-label="Close mandate form">✕</button></div><label for="mandate-title">Name</label><input id="mandate-title" maxlength="200" required placeholder="e.g. Netflix"><label for="mandate-amount">Amount · INR</label><input id="mandate-amount" type="number" min="0.01" max="999999999.99" step="0.01" required><label for="mandate-first-date">First due date</label><input id="mandate-first-date" type="date" required><p class="field-note">For a due date on the 29th–31st, shorter months use their last day.</p><label for="mandate-category">Category</label><select id="mandate-category"></select><label for="mandate-subcategory">Subcategory <span class="muted">(optional)</span></label><select id="mandate-subcategory"></select><div id="mandate-error" class="notice error" role="alert" hidden></div><button id="save-mandate" class="button primary" type="submit">Save mandate</button></form></dialog>
 <dialog id="obsidian-dialog" aria-labelledby="obsidian-heading" aria-describedby="obsidian-description">
   <div class="section-heading"><h2 id="obsidian-heading">Your journal in Obsidian</h2><button type="button" id="close-obsidian" class="button subtle" aria-label="Close Obsidian sync">✕</button></div>
   <p id="obsidian-description">Connect your Mac to copy your expenses, loans, and reminders into your vault. Only your owner account is included.</p>

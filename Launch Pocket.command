@@ -6,9 +6,13 @@ if [[ -x /opt/homebrew/bin/python3 ]]; then
 else
   pocket_python=$(command -v python3)
 fi
-if "$pocket_python" -c 'import json,urllib.request; d=json.load(urllib.request.urlopen("http://127.0.0.1:8768/api/state",timeout=2)); assert d["schemaVersion"]==1 and d["currency"]=="INR"' >/dev/null 2>&1; then
+if "$pocket_python" -c 'import json,urllib.request; d=json.load(urllib.request.urlopen("http://127.0.0.1:8768/api/state",timeout=2)); assert d["schemaVersion"]==2 and d["currency"]=="INR"' >/dev/null 2>&1; then
   open 'http://127.0.0.1:8768'
   exit 0
+fi
+if "$pocket_python" -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8768/api/state",timeout=2)' >/dev/null 2>&1; then
+  print 'An older Pocket server is using port 8768. Close its Terminal window, then launch Pocket again.'
+  exit 1
 fi
 "$pocket_python" server.py &
 pocket_pid=$!

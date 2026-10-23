@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """LifeOS Pocket: a loopback-only expense and loan ledger. No dependencies."""
 import argparse
+import calendar
 import datetime as dt
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,28 @@ CATEGORIES = ['Shopping', 'Food & groceries', 'Transport', 'Home & bills', 'Heal
 
 def now():
     return dt.datetime.now(TZ).isoformat(timespec='seconds')
+
+
+def today():
+    return dt.datetime.now(TZ).date()
+
+
+def month_key(value):
+    return value.strftime('%Y-%m')
+
+
+def month_range(first, last):
+    year, month = map(int, first.split('-'))
+    while (year, month) <= tuple(map(int, last.split('-'))):
+        yield f'{year:04d}-{month:02d}'
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+
+
+def mandate_due(period, day):
+    year, month = map(int, period.split('-'))
+    return dt.date(year, month, min(day, calendar.monthrange(year, month)[1])).isoformat()
 
 
 def money(value):
@@ -62,7 +85,37 @@ def due(value):
 def snapshot(conn):
     entries = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM entries ORDER BY rowid DESC')]
     repayments = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM repayments ORDER BY rowid DESC')]
-    return {'schemaVersion': 1, 'currency': 'INR', 'timezone': 'Asia/Kolkata', 'entries': entries, 'repayments': repayments}
+    rows = conn.execute('SELECT parent,name FROM categories ORDER BY rowid').fetchall()
+    categories = [{'name': name, 'subcategories': [child for parent, child in rows if parent == name]}
+                  for parent, name in rows if parent == '']
+    by_id = {entry['id']: entry for entry in entries}
+    payments = {(r[0], r[1]): {'expenseId': r[2], 'paidAt': r[3],
+                              'title': by_id[r[2]]['title'], 'amountMinor': by_id[r[2]]['amountMinor'],
+                              'category': by_id[r[2]]['category'], 'subcategory': by_id[r[2]].get('subcategory', '')}
+                for r in conn.execute('SELECT mandate_id,period,expense_id,paid_at FROM mandate_payments')}
+    mandates = []
+    current = month_key(today())
+    for row in conn.execute('SELECT payload FROM mandates ORDER BY rowid DESC'):
+        mandate = json.loads(row[0])
+        first = mandate['firstDueDate'][:7]
+        occurrences = []
+        for period in month_range(first, current) if first <= current else []:
+            payment = payments.get((mandate['id'], period))
+            visible = any(window['from'] <= period and (window['to'] is None or period <= window['to'])
+                          for window in mandate['activeWindows'])
+            if not visible and not payment:
+                continue
+            occurrences.append({'period': period, 'dueDate': mandate_due(period, mandate['dueDay']),
+                                'status': 'paid' if payment else 'unpaid',
+                                'expenseId': payment['expenseId'] if payment else None,
+                                'paidAt': payment['paidAt'] if payment else None,
+                                'paidTitle': payment['title'] if payment else None,
+                                'paidAmountMinor': payment['amountMinor'] if payment else None,
+                                'paidCategory': payment['category'] if payment else None,
+                                'paidSubcategory': payment['subcategory'] if payment else None})
+        mandates.append({**mandate, 'occurrences': list(reversed(occurrences))})
+    return {'schemaVersion': 2, 'currency': 'INR', 'timezone': 'Asia/Kolkata',
+            'entries': entries, 'repayments': repayments, 'categories': categories, 'mandates': mandates}
 
 
 def remaining(entry, repayments):
@@ -90,6 +143,12 @@ class Ledger:
         with self.connect() as conn:
             conn.execute('CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS repayments (id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), payload TEXT NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS categories (parent TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(parent,name))')
+            conn.execute('CREATE TABLE IF NOT EXISTS mandates (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS mandate_payments (mandate_id TEXT NOT NULL REFERENCES mandates(id), period TEXT NOT NULL, expense_id TEXT NOT NULL UNIQUE REFERENCES entries(id), paid_at TEXT NOT NULL, PRIMARY KEY(mandate_id,period))')
+            for name in CATEGORIES:
+                if not conn.execute('SELECT 1 FROM categories WHERE parent="" AND name=? COLLATE NOCASE', (name,)).fetchone():
+                    conn.execute('INSERT INTO categories(parent,name) VALUES (?,?)', ('', name))
         self.sync_note()
 
     @contextmanager
@@ -105,6 +164,107 @@ class Ledger:
     def state(self):
         with self.lock, self.connect() as conn:
             return {**snapshot(conn), 'sync': self.sync, 'serverTime': now()}
+
+    def category_pair(self, conn, category, subcategory=''):
+        if not isinstance(category, str) or not isinstance(subcategory, str):
+            raise ValueError('Choose a valid category and subcategory.')
+        row = conn.execute('SELECT name FROM categories WHERE parent="" AND name=? COLLATE NOCASE', (category.strip(),)).fetchone()
+        if not row:
+            raise ValueError('Choose a valid category.')
+        category = row[0]
+        if subcategory.strip():
+            row = conn.execute('SELECT name FROM categories WHERE parent=? AND name=? COLLATE NOCASE', (category, subcategory.strip())).fetchone()
+            if not row:
+                raise ValueError('Choose a valid subcategory.')
+            subcategory = row[0]
+        return category, subcategory.strip()
+
+    def save_category(self, data):
+        name = clean(data.get('name', ''), 60, True)
+        parent = clean(data.get('parent', ''), 60)
+        if not any(char.isalnum() for char in name):
+            raise ValueError('Use letters or numbers in the name.')
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if parent:
+                parent, _ = self.category_pair(conn, parent)
+            if conn.execute('SELECT 1 FROM categories WHERE parent=? AND name=? COLLATE NOCASE', (parent, name)).fetchone():
+                raise ValueError('This category already exists.')
+            conn.execute('INSERT INTO categories(parent,name) VALUES (?,?)', (parent, name))
+        self.sync_note()
+        return self.state()
+
+    def save_mandate(self, data):
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            old = None
+            if data.get('id'):
+                row = conn.execute('SELECT payload FROM mandates WHERE id=?', (data['id'],)).fetchone()
+                if not row:
+                    raise ValueError('Mandate not found.')
+                old = json.loads(row[0])
+            title = clean(data.get('title', ''), 200, True)
+            amount = money(data.get('amount'))
+            first_due = date(data.get('firstDueDate'))
+            category, subcategory = self.category_pair(conn, data.get('category', 'Other'), data.get('subcategory', ''))
+            if old and first_due != old['firstDueDate']:
+                raise ValueError('The first due date cannot change after creation.')
+            mandate = {'id': old['id'] if old else str(uuid.uuid4()), 'title': title,
+                       'amountMinor': amount, 'firstDueDate': first_due,
+                       'dueDay': int(first_due[-2:]), 'category': category, 'subcategory': subcategory,
+                       'activeWindows': old['activeWindows'] if old else [{'from': first_due[:7], 'to': None}],
+                       'createdAt': old['createdAt'] if old else now(), 'updatedAt': now()}
+            conn.execute('INSERT INTO mandates(id,payload) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',
+                         (mandate['id'], json.dumps(mandate)))
+        self.sync_note()
+        return self.state()
+
+    def toggle_mandate(self, data):
+        if type(data.get('paused')) is not bool:
+            raise ValueError('Choose whether to pause this mandate.')
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload FROM mandates WHERE id=?', (data.get('id'),)).fetchone()
+            if not row:
+                raise ValueError('Mandate not found.')
+            mandate = json.loads(row[0]); windows = mandate['activeWindows']
+            active = windows[-1]['to'] is None
+            if data['paused'] and active:
+                current = today(); previous = (current.replace(day=1) - dt.timedelta(days=1)).strftime('%Y-%m')
+                windows[-1]['to'] = previous
+            elif not data['paused'] and not active:
+                windows.append({'from': month_key(today()), 'to': None})
+            mandate['updatedAt'] = now()
+            conn.execute('UPDATE mandates SET payload=? WHERE id=?', (json.dumps(mandate), mandate['id']))
+        self.sync_note()
+        return self.state()
+
+    def pay_mandate(self, data):
+        identifier, period = data.get('id'), data.get('period')
+        if not isinstance(period, str) or len(period) != 7 or period[4] != '-' or not period[:4].isdigit() or not period[5:].isdigit() or not 1 <= int(period[5:]) <= 12:
+            raise ValueError('Choose a valid mandate month.')
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload FROM mandates WHERE id=?', (identifier,)).fetchone()
+            if not row:
+                raise ValueError('Mandate not found.')
+            mandate = json.loads(row[0])
+            if conn.execute('SELECT 1 FROM mandate_payments WHERE mandate_id=? AND period=?', (identifier, period)).fetchone():
+                return self.state()
+            if period < mandate['firstDueDate'][:7] or period > month_key(today()) or not any(
+                    w['from'] <= period and (w['to'] is None or period <= w['to']) for w in mandate['activeWindows']):
+                raise ValueError('This month is not available for payment.')
+            timestamp = now()
+            entry = {'id': str(uuid.uuid4()), 'kind': 'expense', 'title': mandate['title'],
+                     'amountMinor': mandate['amountMinor'], 'person': '', 'category': mandate['category'],
+                     'subcategory': mandate['subcategory'], 'date': today().isoformat(), 'dueAt': '',
+                     'notes': '', 'reminderDone': False, 'createdAt': timestamp, 'updatedAt': timestamp,
+                     'mandateId': identifier, 'mandateMonth': period}
+            conn.execute('INSERT INTO entries(id,payload) VALUES (?,?)', (entry['id'], json.dumps(entry)))
+            conn.execute('INSERT INTO mandate_payments(mandate_id,period,expense_id,paid_at) VALUES (?,?,?,?)',
+                         (identifier, period, entry['id'], timestamp))
+        self.sync_note()
+        return self.state()
 
     def save_entry(self, data):
         with self.lock, self.connect() as conn:
@@ -122,9 +282,9 @@ class Ledger:
             reminder = due(data.get('dueAt', ''))
             if kind == 'reminder' and not reminder:
                 raise ValueError('Choose a date and time for this reminder.')
-            category = data.get('category', 'Other')
-            if category not in CATEGORIES:
-                raise ValueError('Choose a valid category.')
+            category, subcategory = self.category_pair(conn, data.get('category', 'Other'), data.get('subcategory', ''))
+            if old and old.get('mandateId') and kind != 'expense':
+                raise ValueError('Mandate payments must remain expenses.')
             if old:
                 repayments = snapshot(conn)['repayments']
                 paid = sum(r['amountMinor'] for r in repayments if r['entryId'] == old['id'])
@@ -135,11 +295,15 @@ class Ledger:
                 'title': clean(data.get('title', ''), 200, True), 'amountMinor': amount,
                 'person': clean(data.get('person', ''), 100, kind == 'loan') if kind == 'loan' else '',
                 'category': category if kind == 'expense' else '',
+                'subcategory': subcategory if kind == 'expense' else '',
                 'date': date(data.get('date')), 'dueAt': reminder,
                 'notes': clean(data.get('notes', ''), 2000),
                 'reminderDone': old['reminderDone'] if old and old['dueAt'] == reminder and old['kind'] == kind else False,
                 'createdAt': old['createdAt'] if old else now(), 'updatedAt': now(),
             }
+            if old and old.get('mandateId'):
+                entry['mandateId'] = old['mandateId']
+                entry['mandateMonth'] = old['mandateMonth']
             conn.execute('INSERT INTO entries(id,payload) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', (entry['id'], json.dumps(entry)))
         self.sync_note()
         return self.state()
@@ -190,9 +354,17 @@ class Ledger:
                 expenses = [e for e in state['entries'] if e['kind'] == 'expense']
                 loans = [e for e in state['entries'] if e['kind'] == 'loan']
                 active = [e for e in state['entries'] if e['dueAt'] and not e['reminderDone'] and (e['kind'] != 'loan' or remaining(e, state['repayments']) > 0)]
-                lines = [MARKER, '# Expense Ledger', '', f'Updated: {now()}', '', 'Generated from LifeOS Pocket. Edit entries in the tracker; this note is refreshed after every change.', '', 'Currency: INR · Reminder timezone: Asia/Kolkata', '', f'- Total expenses: {rupees(sum(e["amountMinor"] for e in expenses))}', f'- Outstanding loans: {rupees(sum(remaining(e, state["repayments"]) for e in loans))}', f'- Open reminders: {len(active)}', '', '## Expenses', '', '| Date | Item | Category | Amount | Notes |', '| --- | --- | --- | ---: | --- |']
+                lines = [MARKER, '# Expense Ledger', '', f'Updated: {now()}', '', 'Generated from LifeOS Pocket. Edit entries in the tracker; this note is refreshed after every change.', '', 'Currency: INR · Reminder timezone: Asia/Kolkata', '', f'- Total expenses: {rupees(sum(e["amountMinor"] for e in expenses))}', f'- Outstanding loans: {rupees(sum(remaining(e, state["repayments"]) for e in loans))}', f'- Open reminders: {len(active)}', '', '## Expenses', '', '| Date | Item | Category | Subcategory | Amount | Mandate month | Notes |', '| --- | --- | --- | --- | ---: | --- | --- |']
                 for e in expenses:
-                    lines.append(f'| {e["date"]} | {md(e["title"])} | {md(e["category"])} | {rupees(e["amountMinor"])} | {md(e["notes"])} |')
+                    lines.append(f'| {e["date"]} | {md(e["title"])} | {md(e["category"])} | {md(e.get("subcategory", ""))} | {rupees(e["amountMinor"])} | {e.get("mandateMonth", "")} | {md(e["notes"])} |')
+                lines += ['', '## Mandates', '', '| Mandate | Month | Due | Amount | Category | Status |', '| --- | --- | --- | ---: | --- | --- |']
+                for mandate in state['mandates']:
+                    for occurrence in mandate['occurrences']:
+                        paid = occurrence['status'] == 'paid'
+                        category = occurrence['paidCategory'] if paid else mandate['category']
+                        subcategory = occurrence['paidSubcategory'] if paid else mandate['subcategory']
+                        label = category + (' → ' + subcategory if subcategory else '')
+                        lines.append(f'| {md(occurrence["paidTitle"] if paid else mandate["title"])} | {occurrence["period"]} | {occurrence["dueDate"]} | {rupees(occurrence["paidAmountMinor"] if paid else mandate["amountMinor"])} | {md(label)} | {"Paid" if paid else "Unpaid"} |')
                 lines += ['', '## Money lent', '', '| Date | Person | Purpose | Lent | Outstanding | Reminder | Notes |', '| --- | --- | --- | ---: | ---: | --- | --- |']
                 for e in loans:
                     lines.append(f'| {e["date"]} | {md(e["person"])} | {md(e["title"])} | {rupees(e["amountMinor"])} | {rupees(remaining(e,state["repayments"]))} | {e["dueAt"].replace("T"," ") or "Not set"} | {md(e["notes"])} |')
@@ -277,11 +449,17 @@ def main():
             if not self.allowed():
                 return
             parsed = urlparse(self.path)
-            if parsed.path in ['/', '/app.js', '/style.css']:
+            if parsed.path in ['/', '/app.js', '/style.css', '/manifest.webmanifest',
+                               '/icons/pocket-192.png', '/icons/pocket-512.png',
+                               '/icons/apple-touch-icon.png']:
                 name = 'index.html' if parsed.path == '/' else parsed.path[1:]
-                content = (ROOT / name).read_bytes().replace(b'__CSRF__', token.encode())
-                mime = {'index.html':'text/html', 'app.js':'text/javascript', 'style.css':'text/css'}[name]
-                self.reply(200, content, mime + '; charset=utf-8')
+                content = (ROOT / name).read_bytes()
+                if name == 'index.html':
+                    content = content.replace(b'__CSRF__', token.encode())
+                mime = ('image/png' if name.startswith('icons/') else
+                        'application/manifest+json; charset=utf-8' if name == 'manifest.webmanifest' else
+                        {'index.html':'text/html', 'app.js':'text/javascript', 'style.css':'text/css'}[name] + '; charset=utf-8')
+                self.reply(200, content, mime)
             elif parsed.path == '/api/state':
                 self.reply(200, ledger.state())
             elif parsed.path == '/api/export.json':
@@ -310,7 +488,10 @@ def main():
                 data = json.loads(self.rfile.read(length))
                 if not isinstance(data, dict):
                     raise ValueError('Invalid request.')
-                methods = {'/api/entries': ledger.save_entry, '/api/repayments': ledger.repay, '/api/reminders': ledger.toggle_reminder}
+                methods = {'/api/entries': ledger.save_entry, '/api/repayments': ledger.repay,
+                           '/api/reminders': ledger.toggle_reminder, '/api/categories': ledger.save_category,
+                           '/api/mandates': ledger.save_mandate, '/api/mandate-status': ledger.toggle_mandate,
+                           '/api/mandate-payments': ledger.pay_mandate}
                 action = methods.get(self.path)
                 if not action:
                     self.reply(404, {'error':'Not found.'})
