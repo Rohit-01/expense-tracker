@@ -152,6 +152,7 @@ def create_app(settings=None):
         return Response(page, content_type='text/html; charset=utf-8')
 
     @app.get('/app.js')
+    @app.get('/quick_parse.js')
     @app.get('/auth.js')
     @app.get('/install.js')
     @app.get('/style.css')

@@ -449,7 +449,7 @@ def main():
             if not self.allowed():
                 return
             parsed = urlparse(self.path)
-            if parsed.path in ['/', '/app.js', '/install.js', '/style.css', '/manifest.webmanifest', '/favicon.ico',
+            if parsed.path in ['/', '/app.js', '/quick_parse.js', '/install.js', '/style.css', '/manifest.webmanifest', '/favicon.ico',
                                '/icons/pocket-192.png', '/icons/pocket-512.png',
                                '/icons/apple-touch-icon.png', '/icons/favicon-32.png']:
                 name = 'index.html' if parsed.path == '/' else parsed.path[1:]
@@ -459,7 +459,7 @@ def main():
                 mime = ('image/x-icon' if name == 'favicon.ico' else
                         'image/png' if name.startswith('icons/') else
                         'application/manifest+json; charset=utf-8' if name == 'manifest.webmanifest' else
-                        {'index.html':'text/html', 'app.js':'text/javascript', 'install.js':'text/javascript', 'style.css':'text/css'}[name] + '; charset=utf-8')
+                        {'index.html':'text/html', 'app.js':'text/javascript', 'quick_parse.js':'text/javascript', 'install.js':'text/javascript', 'style.css':'text/css'}[name] + '; charset=utf-8')
                 self.reply(200, content, mime)
             elif parsed.path == '/api/state':
                 self.reply(200, ledger.state())

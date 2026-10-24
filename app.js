@@ -233,10 +233,10 @@ function parseQuick() {
   const lower=text.toLowerCase();
   const parsedKind=kind==='mandate'?'mandate':/\b(remind|reminder)\b/.test(lower)?'reminder':/\b(lent|lend|loan|loaned)\b/.test(lower)?'loan':'expense';
   $('entry-form').reset();setKind(parsedKind);$('entry-date').value=today();
-  const marked=text.match(/(?:₹|rs\.?\s*|inr\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i)||text.match(/([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores))?\s*(?:rupees|inr)\b/i)||text.match(/\b(?:for|lent|lend|loaned|paid|spent)\s+([0-9][0-9,]*(?:\.[0-9]{1,2})?)(?:\s*(k|lakh|lakhs|crore|crores)\b)?/i);
-  if(marked&&parsedKind!=='reminder') { const multiplier={k:1000,lakh:100000,lakhs:100000,crore:10000000,crores:10000000};$('entry-amount').value=String(Math.round(Number(marked[1].replaceAll(',',''))*(multiplier[(marked[2]||'').toLowerCase()]||1)*100)/100); }
+  const money=parsedKind==='reminder'?null:parseQuickMoney(text);
+  if(money?.amount) $('entry-amount').value=money.amount;
   if(parsedKind==='loan') { const person=text.match(/\bto\s+(.+?)(?=\s+(?:for|on|by|due|tomorrow|today|remind|next)\b|[,;]|$)/i); if(person) $('entry-person').value=person[1].trim(); }
-  let title=text.replace(/^\s*(?:remind me to|reminder to|remind me|reminder|bought|purchased|spent on)\s+/i,'').replace(/^\s*spent\s+(?:₹|rs\.?\s*|inr\s*)?\d[\d,]*(?:\.\d{1,2})?\s*(?:k|lakhs?|crores?)?\s*(?:rupees|inr)?\s*(?:on|for)?\s*/i,'').replace(/\s+(?:for\s+)?(?:₹|rs\.?\s*|inr\s*)[0-9][0-9,]*(?:\.[0-9]{1,2})?(?:\s*(?:k|lakhs?|crores?)\b)?/i,'');
+  let title=money?money.title:text.replace(/^\s*(?:remind me to|reminder to|remind me|reminder)\s+/i,'');
   if(parsedKind==='loan') title='Loan to '+($('entry-person').value||'someone');
   $('entry-title').value=title.slice(0,200);$('entry-notes').value=text;
   const categories=[[/\b(grocer|groceries|food|lunch|dinner|coffee|meal|restaurant)\b/,'Food & groceries'],[/\b(uber|taxi|petrol|fuel|bus|metro)\b/,'Transport'],[/\b(rent|electricity|bill|wifi|internet)\b/,'Home & bills'],[/\b(medicine|doctor|gym)\b/,'Health'],[/\b(book|course|class)\b/,'Learning'],[/\b(flight|hotel|trip)\b/,'Travel']];
@@ -263,7 +263,8 @@ function parseQuick() {
     else assumedTime=true;
     if(hour<24&&minute<60) { $('has-reminder').checked=true;$('entry-due').value=inferredDay+'T'+String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');updateDue(); }
   } else if(inferredDay&&['expense','mandate'].includes(parsedKind)) $('entry-date').value=inferredDay;
-  $('parse-hint').textContent='Draft filled. Check the amount, person, and dates before saving.'+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
+  const amountHint=money?.issue==='multiple'?'More than one amount found. Enter the total amount yourself before saving.':money?.issue==='missing'?'Could not identify a clear amount. Enter the amount yourself before saving.':'Draft filled. Check the amount, person, and dates before saving.';
+  $('parse-hint').textContent=amountHint+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
 }
 function selectFilter(value) {
   filter=value; $('search').value='';

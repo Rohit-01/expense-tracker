@@ -66,7 +66,7 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         self.assertEqual((response.status_code,response.location),(303,'/login'))
         for path in ['/login','/signup','/auth.js','/install.js','/style.css','/healthz']:
             self.assertEqual(self.get(client,path).status_code,200,path)
-        for path in ['/api/state','/api/export.json','/api/ledger.md','/api/reminder.ics','/app.js']:
+        for path in ['/api/state','/api/export.json','/api/ledger.md','/api/reminder.ics','/app.js','/quick_parse.js']:
             response=self.get(client,path)
             self.assertEqual(response.status_code,401,path)
             self.assertNotIn('WWW-Authenticate',response.headers)
@@ -84,6 +84,8 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
             self.assertIn('href="/icons/favicon-32.png"', response.text)
             self.assertIn('<script src="/install.js" defer></script>', response.text)
             self.assertIn('data-install-action', response.text)
+            if page == '/':
+                self.assertIn('<script src="/quick_parse.js" defer></script>', response.text)
         response = self.get(client, '/manifest.webmanifest')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, 'application/manifest+json')
@@ -101,6 +103,7 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         install_script = self.get(client, '/install.js')
         self.assertEqual(install_script.mimetype, 'text/javascript')
         self.assertEqual(install_script.headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.get(self.client, '/quick_parse.js').mimetype, 'text/javascript')
         favicon = self.get(client, '/favicon.ico')
         self.assertEqual((favicon.status_code, favicon.mimetype), (200, 'image/x-icon'))
         self.assertEqual(favicon.data[:4], b'\x00\x00\x01\x00')

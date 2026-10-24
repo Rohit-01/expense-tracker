@@ -12,8 +12,8 @@ The tracker is also usable in the Codex browser panel while the server is runnin
 
 ## Use
 
-1. Write a short sentence, such as `Bought headphones for ₹2,500` or `Lent ₹5,000 to Rahul`, and select **Fill details**. Or fill the form directly.
-2. Review the suggested values, then save. Quick entry uses simple phrase matching, so always check the amount, person, and dates. Supported date phrases are today, tomorrow, and YYYY-MM-DD; unspecified reminder times default to 9 AM and are flagged for review.
+1. Write a short sentence, such as `Bought headphones for ₹2,500`, `200 petrol`, `petrol for rupees 200`, or `Lent ₹5,000 to Rahul`, and select **Fill details**. Or fill the form directly. Quick entry accepts amounts before or after an item, common rupee notations, and `k`/`lakh`/`crore` shorthand.
+2. Review the suggested values, then save. Quick entry uses local phrase matching, not AI. If it finds multiple amounts or cannot confidently identify one, it leaves Amount empty for you to enter. Always check the amount, person, and dates. Supported date phrases are today, tomorrow, and YYYY-MM-DD; unspecified reminder times default to 9 AM and are flagged for review.
 3. Use **Record repayment** only when money has actually been received. Partial repayments are supported, and the outstanding amount updates automatically. Loans and repayments are separate from spending totals.
 4. Add a reminder date to an expense or loan, or create a standalone reminder. **On your radar** shows open reminders. Marking a reminder done does not settle a loan.
 5. To receive a calendar alert, download **Calendar event ↗**, open the .ics file in your calendar, and confirm its import. The event has an alert at the selected time. Calendar notifications depend on your calendar app's settings. An imported event is independent: later tracker edits, repayment, or completion do not update or remove it from your calendar.
@@ -57,6 +57,7 @@ Run account/privacy checks in the production virtual environment:
 
 ```bash
 .venv/bin/python -m unittest discover -p 'test_*.py' -v
+node --test test_quick_parse.js test_quick_entry_ui.js
 ```
 
 ## Sync your online owner account to Obsidian
