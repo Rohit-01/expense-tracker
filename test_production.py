@@ -64,7 +64,7 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         client=self.app.test_client()
         response=self.get(client,'/')
         self.assertEqual((response.status_code,response.location),(303,'/login'))
-        for path in ['/login','/signup','/auth.js','/style.css','/healthz']:
+        for path in ['/login','/signup','/auth.js','/install.js','/style.css','/healthz']:
             self.assertEqual(self.get(client,path).status_code,200,path)
         for path in ['/api/state','/api/export.json','/api/ledger.md','/api/reminder.ics','/app.js']:
             response=self.get(client,path)
@@ -80,9 +80,14 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
             response = self.get(client if page != '/' else self.client, page)
             self.assertIn('rel="manifest" href="/manifest.webmanifest"', response.text)
             self.assertIn('rel="apple-touch-icon" href="/icons/apple-touch-icon.png"', response.text)
+            self.assertIn('rel="icon" href="/favicon.ico" sizes="any"', response.text)
+            self.assertIn('href="/icons/favicon-32.png"', response.text)
+            self.assertIn('<script src="/install.js" defer></script>', response.text)
+            self.assertIn('data-install-action', response.text)
         response = self.get(client, '/manifest.webmanifest')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, 'application/manifest+json')
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertEqual(response.json['start_url'], '/')
         self.assertEqual(response.json['display'], 'standalone')
         self.assertEqual(response.json['scope'], '/')
@@ -93,6 +98,15 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
             width, height = struct.unpack('>II', image.data[16:24])
             self.assertEqual((width, height), tuple(map(int, icon['sizes'].split('x'))))
         self.assertEqual(self.get(client, '/icons/apple-touch-icon.png').status_code, 200)
+        install_script = self.get(client, '/install.js')
+        self.assertEqual(install_script.mimetype, 'text/javascript')
+        self.assertEqual(install_script.headers['Cache-Control'], 'no-store')
+        favicon = self.get(client, '/favicon.ico')
+        self.assertEqual((favicon.status_code, favicon.mimetype), (200, 'image/x-icon'))
+        self.assertEqual(favicon.data[:4], b'\x00\x00\x01\x00')
+        small_icon = self.get(client, '/icons/favicon-32.png')
+        self.assertEqual((small_icon.status_code, small_icon.mimetype), (200, 'image/png'))
+        self.assertEqual(struct.unpack('>II', small_icon.data[16:24]), (32, 32))
         self.assertEqual(self.get(client, '/api/state').status_code, 401)
 
     def test_https_host_proxy_and_headers(self):

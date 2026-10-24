@@ -75,9 +75,10 @@ def create_app(settings=None):
                 return jsonify(error='This endpoint does not accept query parameters.'), 400
             return None
         g.session = accounts.session(request.cookies.get(COOKIE))
-        public = request.path in {'/login', '/signup', '/auth.js', '/style.css',
-                                  '/manifest.webmanifest', '/icons/pocket-192.png',
-                                  '/icons/pocket-512.png', '/icons/apple-touch-icon.png'}
+        public = request.path in {'/login', '/signup', '/auth.js', '/install.js', '/style.css',
+                                  '/manifest.webmanifest', '/favicon.ico', '/icons/pocket-192.png',
+                                  '/icons/pocket-512.png', '/icons/apple-touch-icon.png',
+                                  '/icons/favicon-32.png'}
         if not public and not (g.session and g.session['user_id']):
             if request.path == '/':
                 return redirect('/login', code=303)
@@ -152,14 +153,18 @@ def create_app(settings=None):
 
     @app.get('/app.js')
     @app.get('/auth.js')
+    @app.get('/install.js')
     @app.get('/style.css')
     @app.get('/manifest.webmanifest')
+    @app.get('/favicon.ico')
     @app.get('/icons/pocket-192.png')
     @app.get('/icons/pocket-512.png')
     @app.get('/icons/apple-touch-icon.png')
+    @app.get('/icons/favicon-32.png')
     def asset():
         mime = ('text/css; charset=utf-8' if request.path == '/style.css' else
                 'application/manifest+json; charset=utf-8' if request.path == '/manifest.webmanifest' else
+                'image/x-icon' if request.path == '/favicon.ico' else
                 'image/png' if request.path.startswith('/icons/') else 'text/javascript; charset=utf-8')
         return Response((ROOT/request.path[1:]).read_bytes(), content_type=mime)
 

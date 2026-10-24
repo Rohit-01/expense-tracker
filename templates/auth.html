@@ -5,8 +5,9 @@
   <meta name="lifeos-token" content="{{ csrf }}">
   <meta name="theme-color" content="#285442"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pocket">
   <link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <title>{{ 'Create your account' if signup else 'Welcome back' }} · Pocket</title>
-  <link rel="stylesheet" href="/style.css"><script src="/auth.js" defer></script>
+  <link rel="stylesheet" href="/style.css"><script src="/install.js" defer></script><script src="/auth.js" defer></script>
 </head>
 <body class="auth-page">
   <header class="auth-header">
@@ -49,6 +50,7 @@
       <p class="auth-help">{{ 'Keep your password somewhere safe. Account recovery is handled by the site administrator.' if signup else 'Forgot your password? Contact the site administrator to reset it.' }}</p>
     </section>
   </main>
-  <footer class="auth-footer"><span>LifeOS Pocket</span><span>A little less mental clutter.</span></footer>
+  <footer class="auth-footer site-footer"><span>LifeOS Pocket</span><button type="button" class="install-action" data-install-action>How to install Pocket</button><span>A little less mental clutter.</span></footer>
+  <dialog id="install-dialog" aria-labelledby="install-heading"><div class="section-heading"><h2 id="install-heading">Install Pocket</h2><button type="button" class="button subtle" data-install-close aria-label="Close installation help">✕</button></div><p>Open Pocket from an app icon on your desktop or phone. Your records still load securely from your Pocket account when you are online.</p><ol class="install-steps"><li>In your browser menu or address bar, choose <strong>Install app</strong> or <strong>Add to Home Screen</strong>, if offered.</li><li>On iPhone or iPad, use the browser’s <strong>Share</strong> menu, then <strong>Add to Home Screen</strong>.</li><li>In Safari on Mac, use <strong>File → Add to Dock</strong>, if available.</li></ol></dialog>
 </body>
 </html>

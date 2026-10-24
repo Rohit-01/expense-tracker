@@ -154,7 +154,7 @@ function render() {
       const link=node('a','text-button','Calendar event ↗'); link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);
       actions.append(action(entry.reminderDone?'Reopen reminder':'Mark reminder done',()=>toggle(entry,!entry.reminderDone)));
     }
-    main.append(actions); item.append(icon,main,amount);journal.append(item);
+    item.append(icon,main,amount,actions);journal.append(item);
   }
   const radar=$('reminder-list'); radar.replaceChildren();
   if(!reminders.length) radar.append(node('div','reminder-empty','All clear. Add a reminder to an entry whenever you need a nudge.'));
