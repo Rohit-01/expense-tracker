@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let state = {entries: [], repayments: [], categories: [], mandates: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, mandateEditing = null;
+let state = {entries: [], repayments: [], categories: [], mandates: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, settleId = null, mandateEditing = null;
 let toastTimer;
 let quickDraft = null;
 const expectedAccount = document.querySelector('meta[name="pocket-account"]')?.content;
@@ -19,6 +19,7 @@ function dueDate(value) { return new Date(value+':00+05:30'); }
 function dueText(value) { return dueDate(value).toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',timeZone:'Asia/Kolkata'})+' IST'; }
 function left(entry) { return entry.amountMinor - state.repayments.filter(r=>r.entryId===entry.id).reduce((sum,r)=>sum+r.amountMinor,0); }
 function isActive(entry) { return entry.dueAt && !entry.reminderDone && (entry.kind !== 'loan' || left(entry)>0); }
+function monthName(value) { return new Date(value+'-01T12:00:00+05:30').toLocaleDateString('en-IN',{month:'long',year:'numeric',timeZone:'Asia/Kolkata'}); }
 function node(tag, className, text) { const el=document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
 function action(text, callback) { const el=node('button','text-button',text); el.type='button'; el.addEventListener('click',callback); return el; }
 function error(id,message) { if ($(id)) { $(id).textContent=message; $(id).hidden=!message; } }
@@ -33,8 +34,23 @@ async function api(path, data) {
   return result;
 }
 function saved(message) {
+  clearJournalTotal();
   toast(state.storageLocation==='vps' ? message : message+(state.sync.ok?' · synced to Obsidian':' · saved on this Mac'));
   render();
+}
+function clearJournalTotal() { $('journal-total-value').hidden=true; $('journal-total-value').textContent=''; }
+function syncMonthFilter() {
+  const select=$('journal-month'), selected=select.value;
+  select.replaceChildren();
+  const all=node('option','','All months'); all.value=''; select.append(all);
+  for(const value of pocketJournal.months(state,today().slice(0,7))) { const option=node('option','',monthName(value)); option.value=value; select.append(option); }
+  select.value=[...select.options].some(option=>option.value===selected)?selected:'';
+}
+function visibleJournal() {
+  const query=$('search').value, month=$('journal-month').value;
+  return filter==='mandate'
+    ? {entries:[], mandateViews:pocketJournal.mandates(state,query,month)}
+    : {entries:pocketJournal.entries(state,filter,query,month), mandateViews:null};
 }
 function setKind(value) {
   kind=value;
@@ -109,6 +125,7 @@ function render() {
     $('open-obsidian').hidden = !state.account.isOwner;
   }
   renderCategories();
+  syncMonthFilter();
   const month=today().slice(0,7), expenses=state.entries.filter(e=>e.kind==='expense'&&e.date.startsWith(month));
   const loans=state.entries.filter(e=>e.kind==='loan'&&left(e)>0), reminders=state.entries.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
   $('spent').textContent=fmt(expenses.reduce((s,e)=>s+e.amountMinor,0));
@@ -119,7 +136,8 @@ function render() {
   const overdue=reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
   $('reminder-meta').textContent=overdue?`${overdue} past due · ready to review`:reminders.length?'A little nudge for later':'Nothing on your mind';
   const showingMandates=filter==='mandate';
-  $('entry-count').textContent=showingMandates?`${state.mandates.length} ${state.mandates.length===1?'mandate':'mandates'}`:`${state.entries.length} ${state.entries.length===1?'entry':'entries'}`;
+  const visible=visibleJournal(), visibleCount=showingMandates?visible.mandateViews.length:visible.entries.length;
+  $('entry-count').textContent=showingMandates?`${visibleCount} ${visibleCount===1?'mandate':'mandates'}`:`${visibleCount} ${visibleCount===1?'entry':'entries'}`;
   $('journal-list').hidden=showingMandates;
   $('mandates-section').hidden=!showingMandates;
   $('reminders-section').hidden=showingMandates;
@@ -127,8 +145,7 @@ function render() {
   $('sync-status').textContent=state.sync.ok?(state.sync.remoteExport?'All changes saved':'Synced to Obsidian'):state.sync.enabled?'Saved · export needs attention':state.storageLocation==='vps'?'Saved on your VPS':'Saved on this Mac';
   $('sync-status').classList.toggle('warning',!state.sync.ok);
   error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
-  const query=$('search').value.trim().toLowerCase();
-  const list=showingMandates?[]:state.entries.filter(e=>(filter==='all'||(filter==='reminder'?(e.kind==='reminder'||e.dueAt):e.kind===filter))&&[e.title,e.person,e.notes,e.category,e.subcategory||''].join(' ').toLowerCase().includes(query));
+  const list=visible.entries;
   list.sort((a,b)=>b.date.localeCompare(a.date)||b.createdAt.localeCompare(a.createdAt));
   const journal=$('journal-list'); journal.replaceChildren();
   if(!showingMandates&&!list.length) {
@@ -139,7 +156,7 @@ function render() {
     const main=node('div','item-main'), amount=node('div','item-amount');
     main.append(node('div','item-title',entry.title));
     main.append(node('div','item-meta',[shortDate(entry.date),entry.kind==='loan'?`Lent to ${entry.person}`:entry.kind==='expense'?entry.category+(entry.subcategory?' → '+entry.subcategory:''):'Reminder',entry.mandateMonth?'Mandate '+entry.mandateMonth:'',entry.kind==='reminder'&&entry.reminderDone?'Completed':''].filter(Boolean).join(' · ')));
-    if(entry.kind!=='reminder') { amount.textContent=fmt(entry.kind==='loan'?left(entry):entry.amountMinor); amount.append(node('small','',entry.kind==='loan'?(left(entry)===0?'Repaid':'still to collect'):'spent')); }
+    if(entry.kind!=='reminder') { const balance=entry.kind==='loan'?left(entry):entry.amountMinor; amount.textContent=fmt(balance); amount.append(node('small',entry.kind==='loan'&&balance===0?'repaid-status':'',entry.kind==='loan'?(balance===0?'✓ Repaid':'still to collect'):'spent')); }
     else { amount.append(node('small','',entry.reminderDone?'Done':'Reminder')); }
     if(entry.notes) main.append(node('div','item-note',entry.notes));
     if(entry.kind==='loan') {
@@ -152,7 +169,7 @@ function render() {
     }
     if(entry.dueAt) main.append(node('div','item-meta',`${entry.reminderDone?'Reminder completed':'Reminder'} · ${dueText(entry.dueAt)}`));
     const actions=node('div','item-actions'); actions.append(action('Edit',()=>editEntry(entry)));
-    if(entry.kind==='loan'&&left(entry)>0) actions.append(action('Record repayment',()=>openRepay(entry)));
+    if(entry.kind==='loan'&&left(entry)>0) actions.append(action('Record repayment',()=>openRepay(entry)),action('Mark repaid',()=>openSettle(entry)));
     if(entry.dueAt) {
       const link=node('a','text-button','Calendar event ↗'); link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);
       actions.append(action(entry.reminderDone?'Reopen reminder':'Mark reminder done',()=>toggle(entry,!entry.reminderDone)));
@@ -171,14 +188,13 @@ function render() {
     const actions=node('div','item-actions');actions.append(action('Mark done',()=>toggle(entry,true)));
     const link=node('a','text-button','Calendar event ↗');link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);main.append(actions);item.append(tile,main);radar.append(item);
   }
-  renderMandates();
+  renderMandates(visible.mandateViews);
 }
-function renderMandates() {
+function renderMandates(views) {
   const list=$('mandates-list'); list.replaceChildren();
-  const query=$('search').value.trim().toLowerCase();
-  const mandates=state.mandates.filter(m=>[m.title,m.category,m.subcategory].join(' ').toLowerCase().includes(query));
-  if(!mandates.length) { list.append(node('div','reminder-empty',state.mandates.length?'No matching mandates. Try another search.':'No mandates yet. Add a monthly plan to keep track of payments.')); return; }
-  for(const mandate of mandates) {
+  if(!views) return;
+  if(!views.length) { list.append(node('div','reminder-empty',state.mandates.length?'No matching mandates. Try another search or month.':'No mandates yet. Add a monthly plan to keep track of payments.')); return; }
+  for(const {mandate,occurrences} of views) {
     const card=node('article','mandate-card');
     const heading=node('div','mandate-heading'), text=node('div');
     text.append(node('h3','',mandate.title),node('p','item-meta',`${fmt(mandate.amountMinor)} monthly · ${mandate.category}${mandate.subcategory?' → '+mandate.subcategory:''}`));
@@ -187,8 +203,8 @@ function renderMandates() {
     heading.append(text,controls); card.append(heading);
     if(mandate.activeWindows.at(-1).to!==null) card.append(node('p','field-note','Paused · paid history is kept.'));
     const rows=node('div','mandate-months');
-    if(!mandate.occurrences.length) rows.append(node('p','field-note','The first month has not arrived yet.'));
-    for(const occurrence of mandate.occurrences) {
+    if(!occurrences.length) rows.append(node('p','field-note','The first month has not arrived yet.'));
+    for(const occurrence of occurrences) {
       const row=node('div','mandate-month');
       const details=node('div'); details.append(node('strong','',new Date(occurrence.dueDate+'T12:00:00+05:30').toLocaleDateString('en-IN',{month:'long',year:'numeric',timeZone:'Asia/Kolkata'})),node('span','item-meta',`Due ${shortDate(occurrence.dueDate)}${occurrence.status==='paid'?' · Recorded '+fmt(occurrence.paidAmountMinor):occurrence.dueDate<today()?' · Overdue':''}`));
       row.append(details);
@@ -225,6 +241,20 @@ function startMandate() {
 function openRepay(entry) {
   repayId=entry.id; $('repay-summary').textContent=`${entry.person} · ${fmt(left(entry))} outstanding`;
   $('repay-amount').value='';$('repay-amount').max=String(left(entry)/100);$('repay-date').value=today();$('repay-notes').value='';error('repay-error','');$('repay-dialog').showModal();$('repay-amount').focus();
+}
+function openSettle(entry) {
+  settleId=entry.id; error('settle-error','');
+  $('settle-summary').textContent=`${entry.person} · ${fmt(left(entry))} outstanding`;
+  $('settle-dialog').showModal(); $('confirm-settle').focus();
+}
+function closeSettle() { settleId=null; $('settle-dialog').close(); }
+async function settleLoan() {
+  const button=$('confirm-settle'), entry=state.entries.find(item=>item.id===settleId&&item.kind==='loan'), amount=entry?left(entry):0;
+  if(!entry||amount<=0) { error('settle-error','This loan is already repaid or no longer available.'); return; }
+  button.disabled=true;
+  try { state=await api('/api/repayments',{entryId:entry.id,amount:String(amount/100),date:today(),notes:'Marked fully repaid'}); closeSettle(); saved('Loan marked repaid'); }
+  catch(e) { error('settle-error',e.message); }
+  finally { button.disabled=false; }
 }
 async function toggle(entry,done) {
   try { state=await api('/api/reminders',{id:entry.id,done});saved(done?'Reminder marked done':'Reminder reopened'); }
@@ -266,15 +296,21 @@ function markQuickDraftChanged() {
   $('parse-hint').textContent=$('quick-entry').value.trim()===quickDraft.text?quickDraft.hint:'Text changed. Click Fill details to update.';
 }
 function selectFilter(value) {
-  filter=value; $('search').value='';
+  filter=value; clearJournalTotal();
   document.querySelectorAll('[data-filter]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.filter===value)));
   render();
+}
+function calculateJournalTotal() {
+  const visible=visibleJournal(), total=pocketJournal.totalMinor(visible.entries,visible.mandateViews,left);
+  $('journal-total-value').textContent='Visible total · '+fmt(total); $('journal-total-value').hidden=false;
 }
 document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',()=>{if(editing&&b.dataset.kind==='mandate') resetForm();setKind(b.dataset.kind);}));
 document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>selectFilter(b.dataset.filter)));
 document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];markQuickDraftChanged();$('quick-entry').focus();}));
 $('quick-entry').addEventListener('input',markQuickDraftChanged);
-$('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',render);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
+$('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',()=>{clearJournalTotal();render();});$('journal-month').addEventListener('change',()=>{clearJournalTotal();render();});$('calculate-total').addEventListener('click',calculateJournalTotal);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
+$('close-settle').addEventListener('click',closeSettle);$('cancel-settle').addEventListener('click',closeSettle);$('confirm-settle').addEventListener('click',settleLoan);
+$('settle-dialog').addEventListener('close',()=>{settleId=null;error('settle-error','');});
 for(const prefix of ['entry','mandate']) $(prefix+'-category').addEventListener('change',()=>updateSubcategories(prefix));
 $('open-category').addEventListener('click',()=>{renderCategories();$('category-dialog').showModal();$('category-name').focus();});
 $('close-category').addEventListener('click',()=>$('category-dialog').close());
@@ -311,9 +347,9 @@ $('repay-form').addEventListener('submit',async event=>{
 });
 $('today').textContent=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'});
 resetForm();
-api('/api/state').then(data=>{state=data;render();}).catch(e=>{if(!leaving){error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';}});
-setInterval(()=>{if(expectedAccount&&!document.hidden) api('/api/state').then(data=>{state=data;render();}).catch(()=>{});else render();},60000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden) api('/api/state').then(data=>{state=data;render();}).catch(()=>{});});
+api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(e=>{if(!leaving){error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';}});
+setInterval(()=>{if(expectedAccount&&!document.hidden) api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(()=>{});else render();},60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(()=>{});});
 if (expectedAccount) {
   const channel = 'BroadcastChannel' in window ? new BroadcastChannel('pocket-auth') : null;
   if (channel) channel.onmessage = () => leaveAccount('/');

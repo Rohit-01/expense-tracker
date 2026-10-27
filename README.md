@@ -19,6 +19,7 @@ The tracker is also usable in the Codex browser panel while the server is runnin
 5. To receive a calendar alert, download **Calendar event ↗**, open the .ics file in your calendar, and confirm its import. The event has an alert at the selected time. Calendar notifications depend on your calendar app's settings. An imported event is independent: later tracker edits, repayment, or completion do not update or remove it from your calendar.
 6. Use **Add category or subcategory** in the expense form to create your own labels. For example, add **Diet Coke** under **Food & groceries**. Quick entry then fills that subcategory for `Spent 200 rupees on diet coke`; review the draft before saving. Matching is local phrase matching, not AI. A unique subcategory match takes priority over an explicitly named category, then common purchase keywords (for example, pizza selects Food & groceries). Unknown or conflicting categories fall back to Other with a review hint. If you change the sentence after filling the draft, Pocket asks you to click **Fill details** again; typing does not overwrite your manual field edits.
 7. Choose **Mandate** in **Write it down** to record a monthly plan such as a subscription or mutual fund contribution. Enter its name, amount, first due date, and category. Select **Mandates** beside **Reminders** in the journal tabs to see current and overdue months, or add another plan. Click **Paid** only after a real payment: Pocket records one expense dated today in India time and leaves a green paid marker in that month's row. Pocket never initiates a charge. Edit, pause, or resume the overall plan using its separate controls. A date on the 29th–31st uses the last day of shorter months.
+8. Filter **Your journal** by type, month, and search together. **Calculate total** adds only the visible records: expenses use their recorded amounts, loans use their outstanding balances, standalone reminders add zero, and mandates use each visible monthly occurrence. Use **Mark repaid** only after receiving the full outstanding loan amount; Pocket records that repayment today and keeps the completed loan and its history under **Money lent**.
 
 Pocket does not send background notifications or messages. It does not create calendar events without your calendar import. Nothing is scheduled merely by trying an example.
 
@@ -57,7 +58,7 @@ Run account/privacy checks in the production virtual environment:
 
 ```bash
 .venv/bin/python -m unittest discover -p 'test_*.py' -v
-node --test test_quick_parse.js test_quick_category.js test_quick_entry_ui.js
+node --test test_journal.js test_quick_parse.js test_quick_category.js test_quick_entry_ui.js
 ```
 
 ## Sync your online owner account to Obsidian

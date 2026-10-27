@@ -6,6 +6,7 @@ import sqlite3
 import struct
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from werkzeug.security import generate_password_hash
 from accounts import COOKIE, digest
 from deploy.backup import make_backup
@@ -66,7 +67,7 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         self.assertEqual((response.status_code,response.location),(303,'/login'))
         for path in ['/login','/signup','/auth.js','/install.js','/style.css','/healthz']:
             self.assertEqual(self.get(client,path).status_code,200,path)
-        for path in ['/api/state','/api/export.json','/api/ledger.md','/api/reminder.ics','/app.js','/quick_parse.js']:
+        for path in ['/api/state','/api/export.json','/api/ledger.md','/api/reminder.ics','/app.js','/quick_parse.js','/journal.js']:
             response=self.get(client,path)
             self.assertEqual(response.status_code,401,path)
             self.assertNotIn('WWW-Authenticate',response.headers)
@@ -86,6 +87,10 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
             self.assertIn('data-install-action', response.text)
             if page == '/':
                 self.assertIn('<script src="/quick_parse.js" defer></script>', response.text)
+                self.assertIn('<script src="/journal.js" defer></script>', response.text)
+                self.assertIn('id="journal-month"', response.text)
+                self.assertIn('id="calculate-total"', response.text)
+                self.assertIn('id="settle-dialog"', response.text)
         response = self.get(client, '/manifest.webmanifest')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, 'application/manifest+json')
@@ -104,6 +109,7 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         self.assertEqual(install_script.mimetype, 'text/javascript')
         self.assertEqual(install_script.headers['Cache-Control'], 'no-store')
         self.assertEqual(self.get(self.client, '/quick_parse.js').mimetype, 'text/javascript')
+        self.assertEqual(self.get(self.client, '/journal.js').mimetype, 'text/javascript')
         favicon = self.get(client, '/favicon.ico')
         self.assertEqual((favicon.status_code, favicon.mimetype), (200, 'image/x-icon'))
         self.assertEqual(favicon.data[:4], b'\x00\x00\x01\x00')
@@ -302,6 +308,33 @@ class ProductionTests(ProductionFixture, unittest.TestCase):
         self.assertEqual(self.post(self.client,'/api/repayments',data).status_code,200)
         self.assertEqual(self.post(self.client,'/api/repayments',{**data,'amount':'61'}).status_code,400)
         self.assertIn('DTSTART:20261022T033000Z',self.get(self.client,'/api/reminder.ics?id='+entry['id']).text)
+
+    def test_full_outstanding_repayment_is_recorded_and_cannot_duplicate(self):
+        entry=self.save(kind='loan',person='Borrower',amount='100').json['entries'][0]
+        self.assertEqual(self.post(self.client,'/api/repayments',dict(entryId=entry['id'],amount='25',date='2026-10-26',notes='Partial')).status_code,200)
+        completed=self.post(self.client,'/api/repayments',dict(entryId=entry['id'],amount='75',date='2026-10-27',notes='Marked fully repaid'))
+        self.assertEqual(completed.status_code,200)
+        repayments=[r for r in completed.json['repayments'] if r['entryId']==entry['id']]
+        self.assertEqual(sum(r['amountMinor'] for r in repayments),10000)
+        self.assertEqual(repayments[0]['notes'],'Marked fully repaid')
+        duplicate=self.post(self.client,'/api/repayments',dict(entryId=entry['id'],amount='75',date='2026-10-27',notes='Marked fully repaid'))
+        self.assertEqual(duplicate.status_code,400)
+        self.assertIn('amount outstanding',duplicate.json['error'])
+
+    def test_simultaneous_full_repayments_only_record_once(self):
+        ledger=Ledger(self.root/'concurrent-repayment','')
+        entry=ledger.save_entry(dict(kind='loan',title='Loan',person='Borrower',amount='100',date='2026-10-27'))['entries'][0]
+        payload=dict(entryId=entry['id'],amount='100',date='2026-10-27',notes='Marked fully repaid')
+        def attempt(_):
+            try:
+                ledger.repay(payload)
+                return 'recorded'
+            except ValueError:
+                return 'rejected'
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(attempt,range(2)))
+        self.assertCountEqual(results,['recorded','rejected'])
+        self.assertEqual(len(ledger.state()['repayments']),1)
 
     def test_owner_export_can_remain_disabled(self):
         app=create_app({**self.settings,'POCKET_VAULT':''})

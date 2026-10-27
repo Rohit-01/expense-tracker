@@ -153,6 +153,7 @@ def create_app(settings=None):
 
     @app.get('/app.js')
     @app.get('/quick_parse.js')
+    @app.get('/journal.js')
     @app.get('/auth.js')
     @app.get('/install.js')
     @app.get('/style.css')

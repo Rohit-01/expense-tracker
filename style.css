@@ -135,3 +135,19 @@
   .auth-card{padding:22px 18px}
   dialog{padding:20px}
 }
+
+/* Month refinement, visible totals, and completed-loan state. */
+.journal-refine{display:grid;grid-template-columns:145px minmax(175px,1fr);gap:8px;min-width:min(100%,328px)}
+.journal-toolbar .journal-refine input,.journal-toolbar .journal-refine select{width:100%;min-height:35px;padding:7px 10px;font-size:11px;background:transparent}
+.journal-total{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.journal-total output{font-weight:650;font-variant-numeric:tabular-nums;color:var(--green)}
+.repaid-status{color:#23724a!important;font-weight:700!important}
+.dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}
+.dialog-actions .button.primary{width:auto;margin:0}
+.dialog-actions .button.subtle{min-width:84px}
+@media(max-width:760px){
+  .journal-refine{grid-template-columns:minmax(0,1fr);min-width:0;width:100%}
+  .journal-toolbar .journal-refine input,.journal-toolbar .journal-refine select{min-height:44px;font-size:14px}
+  .journal-total{align-items:stretch;flex-direction:column}
+  .journal-total .button{width:100%}
+}
