@@ -50,4 +50,39 @@ function parseQuickMoney(text) {
   return {amount:chosen ? chosen.amount : '', title, issue};
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = parseQuickMoney;
+// Only suggest categories supplied by the current account. Each tier must have
+// one clear match; conflicts are left for review instead of depending on order.
+function parseQuickCategory(text, categories) {
+  const source = String(text || '').normalize('NFKC').replace(/\s+/gu, ' ').trim();
+  const present = phrase => {
+    const normalized = phrase.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+    if (!normalized) return false;
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(?:^|[^\\p{L}\\p{N}])' + escaped + '(?=$|[^\\p{L}\\p{N}])', 'iu').test(source);
+  };
+  const fallback = issue => ({category:categories.find(c => c.name.toLowerCase() === 'other')?.name || '', subcategory:'', issue});
+  const choose = matches => matches.length === 1 ? {...matches[0], issue:''} : fallback('ambiguous');
+  const subMatches = categories.flatMap(c => (c.subcategories || [])
+    .filter(present).map(subcategory => ({category:c.name, subcategory})));
+  if (subMatches.length) return choose(subMatches);
+  const mainMatches = categories.filter(c => present(c.name)).map(c => ({category:c.name, subcategory:''}));
+  if (mainMatches.length) return choose(mainMatches);
+
+  const keywords = {
+    'Food & groceries': 'grocer,groceries,grocery,food,lunch,dinner,breakfast,coffee,tea,meal,meals,restaurant,restaurants,pizza,pizzas,burger,burgers,sandwich,sandwiches,snack,snacks,biryani,dosa,idli,pasta,bread,milk,eggs,vegetables,fruit,fruits,coke',
+    'Transport': 'uber,ola,taxi,taxis,cab,cabs,petrol,diesel,fuel,bus,buses,metro,auto rickshaw,parking,toll,tolls,scooter,scooty,car repair,bike repair',
+    'Shopping': 'shopping,clothing,clothes,shirt,shirts,t shirt,t-shirt,jeans,trousers,dress,dresses,shoes,sneakers,headphones,earphones,earbuds,phone,iphone,smartphone,laptop,computer,electronics,keyboard,mouse,charger',
+    'Home & bills': 'rent,electricity,bill,bills,wifi,wi-fi,internet,broadband,water bill,gas cylinder,furniture,sofa,curtains,detergent,cleaning supplies,netflix,subscription,subscriptions',
+    'Health': 'medicine,medicines,medication,doctor,doctors,dentist,hospital,clinic,pharmacy,medical,gym,vitamins,health checkup',
+    'Learning': 'book,books,course,courses,class,classes,tuition,school,college,training,textbook,textbooks,udemy',
+    'Travel': 'flight,flights,hotel,hotels,trip,trips,holiday,holidays,vacation,airfare,resort,hostel'
+  };
+  const matches = categories.filter(c => (keywords[c.name] || '').split(',').some(present))
+    .map(c => ({category:c.name, subcategory:''}));
+  return matches.length ? choose(matches) : fallback('missing');
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = parseQuickMoney;
+  module.exports.parseQuickCategory = parseQuickCategory;
+}

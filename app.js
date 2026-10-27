@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let state = {entries: [], repayments: [], categories: [], mandates: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, mandateEditing = null;
 let toastTimer;
+let quickDraft = null;
 const expectedAccount = document.querySelector('meta[name="pocket-account"]')?.content;
 let leaving = false;
 function leaveAccount(destination = '/login') {
@@ -79,12 +80,14 @@ function renderCategories() {
   fillSelect($('category-parent'),names,parent,'New main category');
 }
 function resetForm() {
+  quickDraft=null;
   editing=null; $('entry-form').reset(); $('entry-date').value=today(); $('quick-entry').value='';
   updateSubcategories('entry');
   $('cancel-edit').hidden=true; $('entry-heading').textContent='Write it down';
   $('parse-hint').textContent='Or fill in the fields below.'; error('form-error',''); setKind('expense');
 }
 function editEntry(entry) {
+  quickDraft=null;
   editing=entry.id; setKind(entry.kind); $('entry-heading').textContent='Edit entry';
   $('entry-title').value=entry.title; $('entry-amount').value=entry.amountMinor?String(entry.amountMinor/100):'';
   $('entry-person').value=entry.person; $('entry-category').value=entry.category||'Other'; updateSubcategories('entry',entry.subcategory||''); $('entry-date').value=entry.date;
@@ -239,18 +242,8 @@ function parseQuick() {
   let title=money?money.title:text.replace(/^\s*(?:remind me to|reminder to|remind me|reminder)\s+/i,'');
   if(parsedKind==='loan') title='Loan to '+($('entry-person').value||'someone');
   $('entry-title').value=title.slice(0,200);$('entry-notes').value=text;
-  const categories=[[/\b(grocer|groceries|food|lunch|dinner|coffee|meal|restaurant)\b/,'Food & groceries'],[/\b(uber|taxi|petrol|fuel|bus|metro)\b/,'Transport'],[/\b(rent|electricity|bill|wifi|internet)\b/,'Home & bills'],[/\b(medicine|doctor|gym)\b/,'Health'],[/\b(book|course|class)\b/,'Learning'],[/\b(flight|hotel|trip)\b/,'Travel']];
-  $('entry-category').value=(categories.find(([re])=>re.test(lower))||[null,'Shopping'])[1];
-  const matches=[];
-  const phrasePresent=phrase=>new RegExp('(?:^|[^\\p{L}\\p{N}])'+phrase.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?=$|[^\\p{L}\\p{N}])','iu').test(lower);
-  const mainMatches=state.categories.filter(category=>phrasePresent(category.name)).sort((a,b)=>b.name.length-a.name.length);
-  if(mainMatches.length && (mainMatches.length===1||mainMatches[0].name.length>mainMatches[1].name.length)) $('entry-category').value=mainMatches[0].name;
-  for(const category of state.categories) for(const subcategory of category.subcategories) {
-    if(phrasePresent(subcategory)) matches.push({category:category.name,subcategory});
-  }
-  matches.sort((a,b)=>b.subcategory.length-a.subcategory.length);
-  if(matches.length && (matches.length===1||matches[0].subcategory.length>matches[1].subcategory.length)) $('entry-category').value=matches[0].category;
-  updateSubcategories('entry',matches.length && (matches.length===1||matches[0].subcategory.length>matches[1].subcategory.length)?matches[0].subcategory:'');
+  const category=['expense','mandate'].includes(parsedKind)?parseQuickCategory(text,state.categories):null;
+  if(category) { $('entry-category').value=category.category; updateSubcategories('entry',category.subcategory); }
   let inferredDay='', assumedTime=false;
   const explicit=lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if(explicit) inferredDay=explicit[1];
@@ -264,7 +257,13 @@ function parseQuick() {
     if(hour<24&&minute<60) { $('has-reminder').checked=true;$('entry-due').value=inferredDay+'T'+String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');updateDue(); }
   } else if(inferredDay&&['expense','mandate'].includes(parsedKind)) $('entry-date').value=inferredDay;
   const amountHint=money?.issue==='multiple'?'More than one amount found. Enter the total amount yourself before saving.':money?.issue==='missing'?'Could not identify a clear amount. Enter the amount yourself before saving.':'Draft filled. Check the amount, person, and dates before saving.';
-  $('parse-hint').textContent=amountHint+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
+  const categoryHint=category?.issue?' Category unclear. Review '+(category.category||'the category')+' before saving.':'';
+  $('parse-hint').textContent=amountHint+categoryHint+(assumedTime?' Reminder time defaults to 9:00 AM IST.':'')+(parsedKind==='reminder'&&!inferredDay?' Choose a reminder date and time below.':'');
+  quickDraft={text,hint:$('parse-hint').textContent};
+}
+function markQuickDraftChanged() {
+  if(!quickDraft || editing) return;
+  $('parse-hint').textContent=$('quick-entry').value.trim()===quickDraft.text?quickDraft.hint:'Text changed. Click Fill details to update.';
 }
 function selectFilter(value) {
   filter=value; $('search').value='';
@@ -273,7 +272,8 @@ function selectFilter(value) {
 }
 document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',()=>{if(editing&&b.dataset.kind==='mandate') resetForm();setKind(b.dataset.kind);}));
 document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>selectFilter(b.dataset.filter)));
-document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];$('quick-entry').focus();}));
+document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];markQuickDraftChanged();$('quick-entry').focus();}));
+$('quick-entry').addEventListener('input',markQuickDraftChanged);
 $('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',render);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
 for(const prefix of ['entry','mandate']) $(prefix+'-category').addEventListener('change',()=>updateSubcategories(prefix));
 $('open-category').addEventListener('click',()=>{renderCategories();$('category-dialog').showModal();$('category-name').focus();});
