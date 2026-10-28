@@ -12,7 +12,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from accounts import Accounts, AuthError, COOKIE, account_directory
-from server import Ledger, ROOT, ical
+from server import Ledger, ROOT, ical, page_destination, trip_page
 
 
 def create_app(settings=None):
@@ -75,13 +75,15 @@ def create_app(settings=None):
                 return jsonify(error='This endpoint does not accept query parameters.'), 400
             return None
         g.session = accounts.session(request.cookies.get(COOKIE))
-        public = request.path in {'/login', '/signup', '/auth.js', '/install.js', '/style.css',
+        public = request.path in {'/login', '/signup', '/auth.js', '/companion.js', '/install.js', '/style.css',
                                   '/manifest.webmanifest', '/favicon.ico', '/icons/pocket-192.png',
                                   '/icons/pocket-512.png', '/icons/apple-touch-icon.png',
                                   '/icons/favicon-32.png'}
         if not public and not (g.session and g.session['user_id']):
             if request.path == '/':
                 return redirect('/login', code=303)
+            if page_destination(request.path) != '/' and request.method in ['GET', 'HEAD']:
+                return redirect('/login?next=' + request.path, code=303)
             return jsonify(error='Sign in to Pocket.'), 401
         if request.method not in ['GET', 'HEAD', 'OPTIONS']:
             if request.headers.get('Origin') != 'https://' + domain:
@@ -117,8 +119,10 @@ def create_app(settings=None):
     @app.route('/signup', methods=['GET', 'POST'])
     def authenticate():
         signup = request.path == '/signup'
+        # Only known local pages are valid destinations, never arbitrary URLs.
+        destination = page_destination(request.args.get('next'))
         if g.session and g.session['user_id']:
-            return redirect('/', code=303) if request.method == 'GET' else (jsonify(error='Log out before using another account.'), 409)
+            return redirect(destination, code=303) if request.method == 'GET' else (jsonify(error='Log out before using another account.'), 409)
         if request.method == 'GET':
             issued = None
             if not g.session:
@@ -126,7 +130,7 @@ def create_app(settings=None):
                 csrf = issued[1]
             else:
                 csrf = g.session['csrf']
-            response = Response(render_template('auth.html', signup=signup, csrf=csrf), content_type='text/html; charset=utf-8')
+            response = Response(render_template('auth.html', signup=signup, csrf=csrf, compact=destination == '/quick-entry', next_suffix=('?next=' + destination) if destination != '/' else ''), content_type='text/html; charset=utf-8')
             return cookie_response(response, issued) if issued else response
         data = json_body()
         address, old_token = request.remote_addr or 'unknown', request.cookies.get(COOKIE)
@@ -134,7 +138,7 @@ def create_app(settings=None):
             issued = accounts.register(data.get('username'), data.get('password'), data.get('confirmation'), address, old_token, get_ledger)
         else:
             issued = accounts.login(data.get('username'), data.get('password'), address, old_token)
-        return cookie_response(jsonify(redirect='/'), issued)
+        return cookie_response(jsonify(redirect=destination), issued)
 
     @app.post('/logout')
     def logout():
@@ -144,17 +148,29 @@ def create_app(settings=None):
         return response
 
     @app.get('/')
-    def index():
+    @app.get('/quick-entry')
+    @app.get('/trips')
+    @app.get('/trips/<identifier>')
+    def index(identifier=None):
+        if identifier and (page_destination(request.path) == '/' or not any(t['id'] == identifier for t in get_ledger(g.session).state()['trips'])):
+            return jsonify(error='Trip not found.'), 404
         # A per-session token also prevents stale tabs from writing into a new account.
         page = (ROOT/'index.html').read_text().replace('__CSRF__', g.session['csrf'])
         page = page.replace('</head>', '<meta name="pocket-account" content="' + g.session['id'] + '"></head>')
         page = page.replace('Saved on this Mac. Your journal stays with you.', 'Saved in your private account on the VPS.')
+        page = trip_page(page, request.path)
+        if request.path == '/quick-entry':
+            page = page.replace('<body>', '<body data-pocket-view="quick-entry">')
+            page = page.replace('</head>', '<script src="/companion.js" defer></script></head>')
+            page = page.replace('<title>Pocket · LifeOS</title>', '<title>Quick entry · Pocket</title>')
+            page = page.replace('Saved in your private account on the VPS.', 'Saved to your Pocket account when you are online.')
         return Response(page, content_type='text/html; charset=utf-8')
 
     @app.get('/app.js')
     @app.get('/quick_parse.js')
     @app.get('/journal.js')
     @app.get('/auth.js')
+    @app.get('/companion.js')
     @app.get('/install.js')
     @app.get('/style.css')
     @app.get('/manifest.webmanifest')
@@ -226,6 +242,7 @@ def create_app(settings=None):
         ledger = get_ledger(g.session)
         methods = {'entries':ledger.save_entry, 'repayments':ledger.repay, 'reminders':ledger.toggle_reminder,
                    'categories':ledger.save_category, 'mandates':ledger.save_mandate,
+                   'trips':ledger.save_trip, 'trip-status':ledger.trip_status,
                    'mandate-status':ledger.toggle_mandate, 'mandate-payments':ledger.pay_mandate}
         if action not in methods:
             return jsonify(error='Not found.'), 404
@@ -234,7 +251,7 @@ def create_app(settings=None):
             methods[action](data)
             return jsonify(state())
         except ValueError as error:
-            if action in {'categories', 'mandates', 'mandate-status', 'mandate-payments'}:
+            if action in {'categories', 'mandates', 'mandate-status', 'mandate-payments', 'trips', 'trip-status'}:
                 return jsonify(error=str(error)), 400
             return jsonify(error='Check the required fields, dates, and amounts. Repayments cannot exceed the amount outstanding.'), 400
         except (TypeError, OverflowError):

@@ -151,3 +151,79 @@
   .journal-total{align-items:stretch;flex-direction:column}
   .journal-total .button{width:100%}
 }
+.companion-only{display:none}
+/* The compact route shares the exact dashboard form and save handlers. */
+body[data-pocket-view="quick-entry"] .shell{max-width:640px;padding:0 18px}
+body[data-pocket-view="quick-entry"] .topbar{display:flex;padding:16px 0;gap:12px;align-items:center;flex-wrap:wrap}
+body[data-pocket-view="quick-entry"] .brand{font-size:22px}
+body[data-pocket-view="quick-entry"] .brand-mark{width:34px;height:36px;font-size:27px}
+body[data-pocket-view="quick-entry"] .byline,
+body[data-pocket-view="quick-entry"] .topbar a[download],
+body[data-pocket-view="quick-entry"] #open-obsidian,
+body[data-pocket-view="quick-entry"] .intro,
+body[data-pocket-view="quick-entry"] .stats,
+body[data-pocket-view="quick-entry"] .journal-panel,
+body[data-pocket-view="quick-entry"] .site-footer{display:none!important}
+body[data-pocket-view="quick-entry"] .header-actions{display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;width:auto;max-width:100%}
+body[data-pocket-view="quick-entry"] .account-controls{display:flex;align-items:center;gap:8px;width:auto}
+body[data-pocket-view="quick-entry"] .account-name{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body[data-pocket-view="quick-entry"] .workspace{display:block;padding:16px 0}
+body[data-pocket-view="quick-entry"] .entry-panel{padding:18px;min-width:0}
+body[data-pocket-view="quick-entry"] .entry-panel .section-heading{margin-bottom:14px}
+body[data-pocket-view="quick-entry"] .entry-panel .quick-entry{min-height:80px}
+body[data-pocket-view="quick-entry"] .companion-only{display:block;font-size:11px}
+body[data-pocket-view="quick-entry"] .form-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+body[data-pocket-view="quick-entry"] .type-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+body[data-pocket-view="quick-entry"] dialog{max-height:calc(100dvh - 24px);overflow:auto}
+body[data-pocket-view="quick-entry"] .toast{bottom:16px;pointer-events:none}
+body.auth-page[data-pocket-view="quick-entry"]{padding:20px}
+body[data-pocket-view="quick-entry"] .auth-header{margin:0 auto 20px;padding:0;width:100%;max-width:480px}
+body[data-pocket-view="quick-entry"] .auth-header-note,
+body[data-pocket-view="quick-entry"] .auth-story{display:none}
+body[data-pocket-view="quick-entry"] .auth-layout{display:block;width:100%;max-width:480px;padding:0;margin:0 auto}
+body[data-pocket-view="quick-entry"] .auth-card{padding:24px;max-width:none}
+@media(max-width:360px){body[data-pocket-view="quick-entry"] .shell{padding:0 12px}body[data-pocket-view="quick-entry"] .entry-panel{padding:14px}body[data-pocket-view="quick-entry"] .form-row{grid-template-columns:1fr}}
+
+/* Trips share the journal records and entry form. */
+.page-nav{display:flex;gap:8px;margin:20px 0 0;align-items:center}
+.page-nav a{padding:10px 18px;border-radius:10px;color:var(--green);text-decoration:none;font-weight:650;min-height:44px;display:flex;align-items:center}
+.page-nav a[aria-current="page"]{background:var(--green);color:#fff}
+#page-heading,.trip-card-title,#page-description{overflow-wrap:anywhere}
+.intro>div{min-width:0}
+.stat strong{overflow-wrap:anywhere}
+.trip-detail-controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:-18px 0 28px}
+.trip-detail-controls>.field-note{flex-basis:100%;margin:0}
+.trip-actions{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.trip-actions .text-button{min-height:44px;text-align:left}
+.trip-badge{display:inline-block;font-size:12px;color:var(--green);background:#e9eee3;padding:5px 10px;border-radius:8px;line-height:1.5;max-width:100%;overflow-wrap:anywhere;text-decoration:none}
+a.trip-badge{margin:6px 0}
+#trips-section{margin:20px 0 40px}
+#trips-section>.section-heading{flex-wrap:wrap;gap:16px}
+#new-trip{width:auto;margin:0}
+.trip-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px}
+.trip-card{min-width:0;padding:24px;border:1px solid var(--line);border-radius:18px;background:#fffefa}
+.trip-card-title{display:block;font-size:24px;font-weight:650;color:var(--green);margin:18px 0 8px;text-decoration:none}
+.trip-card .item-meta{overflow-wrap:anywhere}
+.trip-card-spending{display:block;font-size:28px;font-variant-numeric:tabular-nums;margin-top:22px;overflow-wrap:anywhere}
+.trip-card .trip-actions{border-top:1px solid var(--line);margin-top:20px;padding-top:8px}
+#trip-field{margin-bottom:16px}
+#entry-trip-help{margin-bottom:0}
+.journal-toolbar{flex-wrap:wrap}
+.journal-refine{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr);width:100%;min-width:0}
+.journal-refine select,.journal-refine input{min-width:0;max-width:100%}
+body[data-pocket-view="trips"] .workspace,body[data-pocket-view="trips"] .stats{display:none}
+body[data-pocket-view="trip"] [data-kind="mandate"],body[data-pocket-view="trip"] [data-filter="mandate"],body[data-pocket-view="trip"] #mandates-section{display:none!important}
+body[data-pocket-view="trip"] .type-picker{grid-template-columns:repeat(3,minmax(0,1fr))}
+body[data-pocket-view="trip"] .journal-refine{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr)}
+body[data-pocket-view="quick-entry"] .page-nav{display:none}
+@media(max-width:760px){
+  .page-nav{margin-top:16px}
+  .trip-detail-controls{margin:0 0 24px;align-items:flex-start}
+  .trip-detail-controls>#trip-actions{flex-basis:100%}
+  .journal-refine{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .journal-refine #search{grid-column:1/-1}
+  body[data-pocket-view="trip"] .journal-refine{grid-template-columns:minmax(0,1fr)}
+  .trip-card{padding:20px}
+  #trip-form .form-row{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:380px){.journal-refine{grid-template-columns:minmax(0,1fr)}}

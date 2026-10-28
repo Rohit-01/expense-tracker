@@ -6,6 +6,7 @@ import datetime as dt
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
@@ -19,6 +20,22 @@ ROOT = Path(__file__).resolve().parent
 TZ = ZoneInfo('Asia/Kolkata')
 MARKER = '<!-- lifeos-pocket-generated:v1 -->'
 CATEGORIES = ['Shopping', 'Food & groceries', 'Transport', 'Home & bills', 'Health', 'Travel', 'Learning', 'Other']
+
+
+def page_destination(path):
+    """Exact local page allowlist, shared by both servers and login returns."""
+    if isinstance(path, str) and (path in ('/', '/quick-entry', '/trips') or
+                                 re.fullmatch(r'/trips/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', path)):
+        return path
+    return '/'
+
+
+def trip_page(page, path):
+    if path == '/trips':
+        return page.replace('<body>', '<body data-pocket-view="trips">')
+    if path.startswith('/trips/'):
+        return page.replace('<body>', f'<body data-pocket-view="trip" data-trip-id="{path.split("/")[-1]}">')
+    return page
 
 
 def now():
@@ -114,8 +131,11 @@ def snapshot(conn):
                                 'paidCategory': payment['category'] if payment else None,
                                 'paidSubcategory': payment['subcategory'] if payment else None})
         mandates.append({**mandate, 'occurrences': list(reversed(occurrences))})
-    return {'schemaVersion': 2, 'currency': 'INR', 'timezone': 'Asia/Kolkata',
-            'entries': entries, 'repayments': repayments, 'categories': categories, 'mandates': mandates}
+    trips = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM trips ORDER BY rowid DESC')]
+    active = conn.execute('SELECT value FROM settings WHERE key="activeTripId"').fetchone()
+    return {'schemaVersion': 3, 'currency': 'INR', 'timezone': 'Asia/Kolkata',
+            'entries': entries, 'repayments': repayments, 'categories': categories, 'mandates': mandates,
+            'trips': trips, 'activeTripId': active[0] if active else None}
 
 
 def remaining(entry, repayments):
@@ -145,6 +165,8 @@ class Ledger:
             conn.execute('CREATE TABLE IF NOT EXISTS repayments (id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES entries(id), payload TEXT NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS categories (parent TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(parent,name))')
             conn.execute('CREATE TABLE IF NOT EXISTS mandates (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS trips (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+            conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
             conn.execute('CREATE TABLE IF NOT EXISTS mandate_payments (mandate_id TEXT NOT NULL REFERENCES mandates(id), period TEXT NOT NULL, expense_id TEXT NOT NULL UNIQUE REFERENCES entries(id), paid_at TEXT NOT NULL, PRIMARY KEY(mandate_id,period))')
             for name in CATEGORIES:
                 if not conn.execute('SELECT 1 FROM categories WHERE parent="" AND name=? COLLATE NOCASE', (name,)).fetchone():
@@ -178,6 +200,52 @@ class Ledger:
                 raise ValueError('Choose a valid subcategory.')
             subcategory = row[0]
         return category, subcategory.strip()
+
+    def trip(self, conn, identifier):
+        if not isinstance(identifier, str):
+            raise ValueError('Choose a valid trip.')
+        row = conn.execute('SELECT payload FROM trips WHERE id=?', (identifier,)).fetchone()
+        if not row:
+            raise ValueError('Trip not found.')
+        return json.loads(row[0])
+
+    def save_trip(self, data):
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            old = self.trip(conn, data['id']) if data.get('id') else None
+            start = date(data['startDate']) if data.get('startDate') else ''
+            end = date(data['endDate']) if data.get('endDate') else ''
+            if start and end and end < start:
+                raise ValueError('The end date must be on or after the start date.')
+            trip = {'id': old['id'] if old else str(uuid.uuid4()),
+                    'name': clean(data.get('name', ''), 100, True),
+                    'destination': clean(data.get('destination', ''), 200),
+                    'startDate': start, 'endDate': end,
+                    'completed': old['completed'] if old else False,
+                    'createdAt': old['createdAt'] if old else now(), 'updatedAt': now()}
+            conn.execute('INSERT INTO trips(id,payload) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', (trip['id'], json.dumps(trip)))
+        self.sync_note()
+        return self.state()
+
+    def trip_status(self, data):
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            trip = self.trip(conn, data.get('id'))
+            action = data.get('action')
+            if action == 'activate':
+                if trip['completed']:
+                    raise ValueError('Reopen this trip before making it active.')
+                conn.execute('INSERT INTO settings(key,value) VALUES ("activeTripId",?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (trip['id'],))
+            elif action in ('deactivate', 'complete', 'reopen'):
+                if action != 'reopen':
+                    conn.execute('DELETE FROM settings WHERE key="activeTripId" AND value=?', (trip['id'],))
+                if action != 'deactivate':
+                    trip.update(completed=action == 'complete', updatedAt=now())
+                    conn.execute('UPDATE trips SET payload=? WHERE id=?', (json.dumps(trip), trip['id']))
+            else:
+                raise ValueError('Choose a valid trip action.')
+        self.sync_note()
+        return self.state()
 
     def save_category(self, data):
         name = clean(data.get('name', ''), 60, True)
@@ -285,6 +353,12 @@ class Ledger:
             category, subcategory = self.category_pair(conn, data.get('category', 'Other'), data.get('subcategory', ''))
             if old and old.get('mandateId') and kind != 'expense':
                 raise ValueError('Mandate payments must remain expenses.')
+            # Omitted by older clients: preserve edits, leave new entries unassigned.
+            trip_id = data.get('tripId', old.get('tripId') if old else None)
+            if trip_id not in (None, ''):
+                self.trip(conn, trip_id)
+            else:
+                trip_id = None
             if old:
                 repayments = snapshot(conn)['repayments']
                 paid = sum(r['amountMinor'] for r in repayments if r['entryId'] == old['id'])
@@ -298,6 +372,7 @@ class Ledger:
                 'subcategory': subcategory if kind == 'expense' else '',
                 'date': date(data.get('date')), 'dueAt': reminder,
                 'notes': clean(data.get('notes', ''), 2000),
+                'tripId': trip_id,
                 'reminderDone': old['reminderDone'] if old and old['dueAt'] == reminder and old['kind'] == kind else False,
                 'createdAt': old['createdAt'] if old else now(), 'updatedAt': now(),
             }
@@ -351,12 +426,15 @@ class Ledger:
                     raise ValueError('This note is synchronized from your VPS. Use the online Pocket app for new records.')
                 if target.exists() and MARKER not in target.read_text():
                     raise ValueError('Expense Ledger.md already exists and is not managed by this tracker.')
+                trip_names = {t['id']: t['name'] for t in state['trips']}
+                def trip_label(entry):
+                    return md(trip_names.get(entry.get('tripId'), ''))
                 expenses = [e for e in state['entries'] if e['kind'] == 'expense']
                 loans = [e for e in state['entries'] if e['kind'] == 'loan']
                 active = [e for e in state['entries'] if e['dueAt'] and not e['reminderDone'] and (e['kind'] != 'loan' or remaining(e, state['repayments']) > 0)]
-                lines = [MARKER, '# Expense Ledger', '', f'Updated: {now()}', '', 'Generated from LifeOS Pocket. Edit entries in the tracker; this note is refreshed after every change.', '', 'Currency: INR · Reminder timezone: Asia/Kolkata', '', f'- Total expenses: {rupees(sum(e["amountMinor"] for e in expenses))}', f'- Outstanding loans: {rupees(sum(remaining(e, state["repayments"]) for e in loans))}', f'- Open reminders: {len(active)}', '', '## Expenses', '', '| Date | Item | Category | Subcategory | Amount | Mandate month | Notes |', '| --- | --- | --- | --- | ---: | --- | --- |']
+                lines = [MARKER, '# Expense Ledger', '', f'Updated: {now()}', '', 'Generated from LifeOS Pocket. Edit entries in the tracker; this note is refreshed after every change.', '', 'Currency: INR · Reminder timezone: Asia/Kolkata', '', f'- Total expenses: {rupees(sum(e["amountMinor"] for e in expenses))}', f'- Outstanding loans: {rupees(sum(remaining(e, state["repayments"]) for e in loans))}', f'- Open reminders: {len(active)}', '', '## Expenses', '', '| Date | Item | Category | Subcategory | Amount | Mandate month | Notes | Trip |', '| --- | --- | --- | --- | ---: | --- | --- | --- |']
                 for e in expenses:
-                    lines.append(f'| {e["date"]} | {md(e["title"])} | {md(e["category"])} | {md(e.get("subcategory", ""))} | {rupees(e["amountMinor"])} | {e.get("mandateMonth", "")} | {md(e["notes"])} |')
+                    lines.append(f'| {e["date"]} | {md(e["title"])} | {md(e["category"])} | {md(e.get("subcategory", ""))} | {rupees(e["amountMinor"])} | {e.get("mandateMonth", "")} | {md(e["notes"])} | {trip_label(e)} |')
                 lines += ['', '## Mandates', '', '| Mandate | Month | Due | Amount | Category | Status |', '| --- | --- | --- | ---: | --- | --- |']
                 for mandate in state['mandates']:
                     for occurrence in mandate['occurrences']:
@@ -365,19 +443,28 @@ class Ledger:
                         subcategory = occurrence['paidSubcategory'] if paid else mandate['subcategory']
                         label = category + (' → ' + subcategory if subcategory else '')
                         lines.append(f'| {md(occurrence["paidTitle"] if paid else mandate["title"])} | {occurrence["period"]} | {occurrence["dueDate"]} | {rupees(occurrence["paidAmountMinor"] if paid else mandate["amountMinor"])} | {md(label)} | {"Paid" if paid else "Unpaid"} |')
-                lines += ['', '## Money lent', '', '| Date | Person | Purpose | Lent | Outstanding | Reminder | Notes |', '| --- | --- | --- | ---: | ---: | --- | --- |']
+                lines += ['', '## Money lent', '', '| Date | Person | Purpose | Lent | Outstanding | Reminder | Notes | Trip |', '| --- | --- | --- | ---: | ---: | --- | --- | --- |']
                 for e in loans:
-                    lines.append(f'| {e["date"]} | {md(e["person"])} | {md(e["title"])} | {rupees(e["amountMinor"])} | {rupees(remaining(e,state["repayments"]))} | {e["dueAt"].replace("T"," ") or "Not set"} | {md(e["notes"])} |')
-                lines += ['', '## Repayments received', '', '| Date | Person | Amount | Notes |', '| --- | --- | ---: | --- |']
+                    lines.append(f'| {e["date"]} | {md(e["person"])} | {md(e["title"])} | {rupees(e["amountMinor"])} | {rupees(remaining(e,state["repayments"]))} | {e["dueAt"].replace("T"," ") or "Not set"} | {md(e["notes"])} | {trip_label(e)} |')
+                lines += ['', '## Repayments received', '', '| Date | Person | Amount | Notes | Trip |', '| --- | --- | ---: | --- | --- |']
                 for r in state['repayments']:
                     e = next(e for e in loans if e['id'] == r['entryId'])
-                    lines.append(f'| {r["date"]} | {md(e["person"])} | {rupees(r["amountMinor"])} | {md(r["notes"])} |')
+                    lines.append(f'| {r["date"]} | {md(e["person"])} | {rupees(r["amountMinor"])} | {md(r["notes"])} | {trip_label(e)} |')
                 lines += ['', '## Reminders', '', 'Reminder dates appear in the app. Calendar alerts require importing the downloaded calendar event.', '']
                 for e in sorted((e for e in state['entries'] if e['dueAt']), key=lambda e:e['dueAt']):
                     settled = e['kind'] == 'loan' and remaining(e, state['repayments']) == 0
                     done = e['reminderDone'] or settled
                     label = 'Loan settled' if settled else ('Completed by user' if e['reminderDone'] else 'Open')
-                    lines += [f'- [{"x" if done else " "}] {md(e["title"])}', f'  - Due: {e["dueAt"].replace("T"," ")} IST', f'  - Status: {label}', f'  - Notes: {md(e["notes"]) or "—"}']
+                    lines += [f'- [{"x" if done else " "}] {md(e["title"])}', f'  - Due: {e["dueAt"].replace("T"," ")} IST', f'  - Status: {label}', f'  - Trip: {trip_label(e) or "No trip"}', f'  - Notes: {md(e["notes"]) or "—"}']
+                lines += ['', '## Trips', '', 'Trip totals include all linked dates. These are the same records shown above, not additional spending.', '', '| Trip | Destination | Dates | Status | Spending | To collect | Open reminders |', '| --- | --- | --- | --- | ---: | ---: | ---: |']
+                for trip in state['trips']:
+                    identifier = trip['id']
+                    status = 'Completed' if trip['completed'] else 'Active' if state['activeTripId'] == identifier else 'Open'
+                    dates = ' → '.join([trip['startDate'] or 'Not set', trip['endDate'] or 'Not set'])
+                    spent = sum(e['amountMinor'] for e in expenses if e.get('tripId') == identifier)
+                    owed = sum(remaining(e, state['repayments']) for e in loans if e.get('tripId') == identifier)
+                    reminders = sum(1 for e in active if e.get('tripId') == identifier)
+                    lines.append(f'| {md(trip["name"])} | {md(trip["destination"])} | {dates} | {status} | {rupees(spent)} | {rupees(owed)} | {reminders} |')
                 if not state['entries']:
                     lines += ['No entries recorded yet.']
                 lines += ['', 'Related: [[ai zone/openai agent/Personal/Finance/Expense Tracker|Expense Tracker]] · [[ai zone/openai agent/LifeOS Home|LifeOS Home]]', '']
@@ -449,17 +536,23 @@ def main():
             if not self.allowed():
                 return
             parsed = urlparse(self.path)
-            if parsed.path in ['/', '/app.js', '/quick_parse.js', '/journal.js', '/install.js', '/style.css', '/manifest.webmanifest', '/favicon.ico',
+            if (page_destination(parsed.path) == parsed.path or parsed.path in ['/app.js', '/quick_parse.js', '/journal.js', '/install.js', '/style.css', '/manifest.webmanifest', '/favicon.ico',
                                '/icons/pocket-192.png', '/icons/pocket-512.png',
-                               '/icons/apple-touch-icon.png', '/icons/favicon-32.png']:
-                name = 'index.html' if parsed.path == '/' else parsed.path[1:]
+                               '/icons/apple-touch-icon.png', '/icons/favicon-32.png', '/companion.js']):
+                if parsed.path.startswith('/trips/') and not any(t['id'] == parsed.path.split('/')[-1] for t in ledger.state()['trips']):
+                    self.reply(404, {'error': 'Trip not found.'})
+                    return
+                name = 'index.html' if page_destination(parsed.path) == parsed.path else parsed.path[1:]
                 content = (ROOT / name).read_bytes()
                 if name == 'index.html':
-                    content = content.replace(b'__CSRF__', token.encode())
+                    page = trip_page(content.decode().replace('__CSRF__', token), parsed.path)
+                    if parsed.path == '/quick-entry':
+                        page = page.replace('<body>', '<body data-pocket-view="quick-entry">').replace('</head>', '<script src="/companion.js" defer></script></head>')
+                    content = page.encode()
                 mime = ('image/x-icon' if name == 'favicon.ico' else
                         'image/png' if name.startswith('icons/') else
                         'application/manifest+json; charset=utf-8' if name == 'manifest.webmanifest' else
-                        {'index.html':'text/html', 'app.js':'text/javascript', 'quick_parse.js':'text/javascript', 'journal.js':'text/javascript', 'install.js':'text/javascript', 'style.css':'text/css'}[name] + '; charset=utf-8')
+                        {'index.html':'text/html', 'app.js':'text/javascript', 'quick_parse.js':'text/javascript', 'journal.js':'text/javascript', 'install.js':'text/javascript', 'companion.js':'text/javascript', 'style.css':'text/css'}[name] + '; charset=utf-8')
                 self.reply(200, content, mime)
             elif parsed.path == '/api/state':
                 self.reply(200, ledger.state())
@@ -492,7 +585,8 @@ def main():
                 methods = {'/api/entries': ledger.save_entry, '/api/repayments': ledger.repay,
                            '/api/reminders': ledger.toggle_reminder, '/api/categories': ledger.save_category,
                            '/api/mandates': ledger.save_mandate, '/api/mandate-status': ledger.toggle_mandate,
-                           '/api/mandate-payments': ledger.pay_mandate}
+                           '/api/mandate-payments': ledger.pay_mandate,
+                           '/api/trips': ledger.save_trip, '/api/trip-status': ledger.trip_status}
                 action = methods.get(self.path)
                 if not action:
                     self.reply(404, {'error':'Not found.'})

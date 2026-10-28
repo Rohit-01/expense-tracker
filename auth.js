@@ -33,7 +33,7 @@ form.addEventListener('submit', async event => {
       channel.postMessage('changed');
       channel.close();
     }
-    window.location.replace('/');
+    window.location.replace((/^\/(?:quick-entry|trips(?:\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?)$/.test(result.redirect) ? result.redirect : '/'));
   } catch (error) {
     message.textContent = error instanceof TypeError ? 'Could not connect. Check your connection and try again.' : error.message;
     message.hidden = false;

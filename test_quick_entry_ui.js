@@ -136,3 +136,12 @@ test('changed text flags a stale draft without changing manual edits; refill upd
   assert.equal(result.fields('entry-amount').value, '2000');
   assert.ok(appSource.includes("$('quick-entry').addEventListener('input',markQuickDraftChanged)"));
 });
+
+test('refilling a draft preserves explicit No trip and named trip selections for every kind',()=>{
+  for(const kind of ['expense','loan','reminder','mandate']) for(const trip of ['', 'goa']) {
+    const result=draft('200 petrol',kind);
+    result.fields('entry-trip').value=trip;
+    result.change(kind==='loan'?'Lent 200 to Maya':kind==='reminder'?'Remind me to pay rent tomorrow at 9am':'200 pizza');
+    result.refill();assert.equal(result.fields('entry-trip').value,trip);
+  }
+});

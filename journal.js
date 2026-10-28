@@ -10,17 +10,20 @@ var pocketJournal = (() => {
     return [...values].sort().reverse();
   }
 
-  function entries(state, type, query, month) {
+  function entries(state, type, query, month, tripId = '') {
     const needle = searchText(query).trim();
     return (state.entries || []).filter(entry => {
       const typeMatches = type === 'all' || (type === 'reminder' ? entry.kind === 'reminder' || entry.dueAt : entry.kind === type);
       const monthMatches = !month || (entry.date || '').slice(0, 7) === month;
-      const haystack = [entry.title, entry.person, entry.notes, entry.category, entry.subcategory].map(searchText).join(' ');
-      return typeMatches && monthMatches && haystack.includes(needle);
+      const tripMatches = !tripId || (tripId === 'none' ? !entry.tripId : entry.tripId === tripId);
+      const trip = (state.trips || []).find(t => t.id === entry.tripId);
+      const haystack = [entry.title, entry.person, entry.notes, entry.category, entry.subcategory, trip?.name, trip?.destination].map(searchText).join(' ');
+      return typeMatches && monthMatches && tripMatches && haystack.includes(needle);
     });
   }
 
-  function mandates(state, query, month) {
+  function mandates(state, query, month, tripId = '') {
+    if (tripId && tripId !== 'none') return [];
     const needle = searchText(query).trim();
     return (state.mandates || []).filter(mandate =>
       [mandate.title, mandate.category, mandate.subcategory].map(searchText).join(' ').includes(needle)
@@ -36,7 +39,21 @@ var pocketJournal = (() => {
     return entryList.reduce((total, entry) => total + (entry.kind === 'expense' ? entry.amountMinor : entry.kind === 'loan' ? remaining(entry) : 0), 0);
   }
 
-  return {months, entries, mandates, totalMinor};
+  function tripState(state, tripId) {
+    return {...state, entries:(state.entries || []).filter(e => e.tripId === tripId), mandates:[]};
+  }
+
+  function tripSummary(state, tripId) {
+    const linked = tripState(state, tripId).entries;
+    const remaining = e => e.amountMinor - (state.repayments || []).filter(r => r.entryId === e.id).reduce((sum,r) => sum+r.amountMinor,0);
+    return {
+      spending:linked.filter(e => e.kind === 'expense').reduce((sum,e) => sum+e.amountMinor,0),
+      outstanding:linked.filter(e => e.kind === 'loan').reduce((sum,e) => sum+remaining(e),0),
+      reminders:linked.filter(e => e.dueAt && !e.reminderDone && (e.kind !== 'loan' || remaining(e)>0)).length
+    };
+  }
+
+  return {months, entries, mandates, totalMinor, tripState, tripSummary};
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = pocketJournal;

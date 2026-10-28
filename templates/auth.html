@@ -8,10 +8,11 @@
   <link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <title>{{ 'Create your account' if signup else 'Welcome back' }} · Pocket</title>
   <link rel="stylesheet" href="/style.css"><script src="/install.js" defer></script><script src="/auth.js" defer></script>
+  {% if compact %}<script src="/companion.js" defer></script>{% endif %}
 </head>
-<body class="auth-page">
+<body class="auth-page" {% if compact %}data-pocket-view="quick-entry"{% endif %}>
   <header class="auth-header">
-    <a class="brand" href="/login" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a>
+    <a class="brand" href="/login{{ next_suffix }}" aria-label="Pocket home"><span class="brand-mark">p.</span><span>pocket<span class="byline">YOUR LIFEOS MONEY JOURNAL</span></span></a>
     <span class="auth-header-note">A little clarity, every day.</span>
   </header>
   <main class="auth-layout">
@@ -31,7 +32,7 @@
       <p class="eyebrow">{{ 'A FRESH PAGE' if signup else 'YOUR JOURNAL IS HERE' }}</p>
       <h2 id="auth-heading">{{ 'Make it yours.' if signup else 'Welcome back.' }}</h2>
       <p class="auth-card-description">{{ 'Create an account to start keeping track.' if signup else 'Log in to pick up where you left off.' }}</p>
-      <form id="auth-form" action="{{ '/signup' if signup else '/login' }}" method="post">
+      <form id="auth-form" action="{{ '/signup' if signup else '/login' }}{{ next_suffix }}" method="post">
         <label for="username">Username</label>
         <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="{{ 32 if signup else 100 }}" {% if signup %}minlength="3" pattern="[A-Za-z0-9_.\-]{3,32}" aria-describedby="username-help"{% endif %} placeholder="Your username">
         {% if signup %}<p class="field-note" id="username-help">3–32 letters, numbers, dots, underscores, or hyphens.</p>{% endif %}
@@ -46,7 +47,7 @@
         <button id="auth-submit" class="button primary auth-submit" type="submit">{{ 'Create account' if signup else 'Log in' }} <span aria-hidden="true">↗</span></button>
         <noscript><p class="notice error">Enable JavaScript to securely log in or create an account.</p></noscript>
       </form>
-      <p class="auth-switch">{{ 'Already have an account?' if signup else 'New to Pocket?' }} <a href="{{ '/login' if signup else '/signup' }}">{{ 'Log in' if signup else 'Create an account' }}</a></p>
+      <p class="auth-switch">{{ 'Already have an account?' if signup else 'New to Pocket?' }} <a href="{{ '/login' if signup else '/signup' }}{{ next_suffix }}">{{ 'Log in' if signup else 'Create an account' }}</a></p>
       <p class="auth-help">{{ 'Keep your password somewhere safe. Account recovery is handled by the site administrator.' if signup else 'Forgot your password? Contact the site administrator to reset it.' }}</p>
     </section>
   </main>

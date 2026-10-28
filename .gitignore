@@ -26,3 +26,5 @@ __pycache__/
 *.log
 preview.png
 *-preview.png
+mac/build/
+mac/release/

@@ -1,13 +1,26 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let state = {entries: [], repayments: [], categories: [], mandates: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, settleId = null, mandateEditing = null;
+let state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, settleId = null, mandateEditing = null;
 let toastTimer;
 let quickDraft = null;
+const compactEntry = document.body.dataset.pocketView === 'quick-entry';
+const tripsPage = document.body.dataset.pocketView === 'trips';
+const tripPageId = document.body.dataset.tripId || '';
+let tripsLoaded = false, entryTripInitialized = false, tripEditing = null, tripSaving = false;
+let entrySaving = false, accountReady = false, mutationRevision = 0;
+const accountHome = compactEntry ? '/quick-entry' : tripPageId ? '/trips/'+tripPageId : tripsPage ? '/trips' : '/';
+const accountLogin = accountHome === '/' ? '/login' : '/login?next='+accountHome;
 const expectedAccount = document.querySelector('meta[name="pocket-account"]')?.content;
 let leaving = false;
-function leaveAccount(destination = '/login') {
+function leaveAccount(destination = accountLogin) {
+  if (leaving) return;
   leaving = true;
-  state = {entries: [], repayments: [], categories: [], mandates: [], sync: {}};
+  clearTimeout(toastTimer);
+  accountReady = false; quickDraft = null; editing = null;
+  document.querySelectorAll('form').forEach(form => form.reset());
+  $('quick-entry').value = '';
+  document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+  state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, sync: {}};
   document.body.replaceChildren(node('p', 'notice', 'Opening your account…'));
   window.location.replace(destination);
 }
@@ -26,35 +39,125 @@ function error(id,message) { if ($(id)) { $(id).textContent=message; $(id).hidde
 function toast(message) { clearTimeout(toastTimer); $('toast').textContent=message; $('toast').hidden=false; toastTimer=setTimeout(()=>$('toast').hidden=true,5000); }
 async function api(path, data) {
   const options=data?{method:'POST',headers:{'Content-Type':'application/json','X-LifeOS-Token':document.querySelector('meta[name="lifeos-token"]').content},body:JSON.stringify(data)}:{};
-  const response=await fetch(path,options);
-  if (response.status === 401 && expectedAccount) { leaveAccount(); throw new Error('Please log in again.'); }
-  const result=await response.json();
-  if (expectedAccount && ((result.account && result.account.id !== expectedAccount) || (result.ownerId && result.ownerId !== expectedAccount))) { leaveAccount('/'); throw new Error('Account changed.'); }
-  if(!response.ok) throw new Error(result.error || 'Could not save. Please try again.');
-  return result;
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response=await fetch(path,{...options, cache:'no-store', signal:controller.signal});
+    if (response.status === 401 && expectedAccount) { leaveAccount(); throw new Error('Please log in again.'); }
+    const result=await response.json();
+    if (expectedAccount && response.status === 403 && result.error === 'Your session changed or expired. Refresh the page and try again.') { leaveAccount(); throw new Error('Please log in again.'); }
+    if (expectedAccount && ((result.account && result.account.id !== expectedAccount) || (result.ownerId && result.ownerId !== expectedAccount))) { leaveAccount(accountHome); throw new Error('Account changed.'); }
+    if(!response.ok) throw new Error(response.status >= 500 && data ? 'Save could not be confirmed. Check your journal before retrying.' : result.error || 'Could not save. Please try again.');
+    if (data) mutationRevision++;
+    return result;
+  } catch (e) {
+    if (data && ['TypeError','AbortError','SyntaxError'].includes(e.name)) throw new Error('Save could not be confirmed. Check your journal before retrying.');
+    throw e;
+  } finally { clearTimeout(timeout); }
 }
 function saved(message) {
   clearJournalTotal();
-  toast(state.storageLocation==='vps' ? message : message+(state.sync.ok?' · synced to Obsidian':' · saved on this Mac'));
+  toast(compactEntry ? 'Saved to Pocket' : state.storageLocation==='vps' ? message : message+(state.sync.ok?' · synced to Obsidian':' · saved on this Mac'));
   render();
+  if (compactEntry) { $('quick-entry').focus(); window.scrollTo(0,0); }
 }
 function clearJournalTotal() { $('journal-total-value').hidden=true; $('journal-total-value').textContent=''; }
 function syncMonthFilter() {
   const select=$('journal-month'), selected=select.value;
   select.replaceChildren();
   const all=node('option','','All months'); all.value=''; select.append(all);
-  for(const value of pocketJournal.months(state,today().slice(0,7))) { const option=node('option','',monthName(value)); option.value=value; select.append(option); }
+  for(const value of pocketJournal.months(tripPageId ? pocketJournal.tripState(state,tripPageId) : state,today().slice(0,7))) { const option=node('option','',monthName(value)); option.value=value; select.append(option); }
   select.value=[...select.options].some(option=>option.value===selected)?selected:'';
 }
 function visibleJournal() {
-  const query=$('search').value, month=$('journal-month').value;
+  const query=$('search').value, month=$('journal-month').value, trip=tripPageId || $('journal-trip').value;
   return filter==='mandate'
-    ? {entries:[], mandateViews:pocketJournal.mandates(state,query,month)}
-    : {entries:pocketJournal.entries(state,filter,query,month), mandateViews:null};
+    ? {entries:[], mandateViews:pocketJournal.mandates(state,query,month,trip)}
+    : {entries:pocketJournal.entries(state,filter,query,month,trip), mandateViews:null};
+}
+function syncTripSelectors(reset=false) {
+  const select=$('entry-trip');
+  const useDefault=reset || !entryTripInitialized;
+  const selected=useDefault ? tripPageId || state.activeTripId || '' : select.value;
+  const filterValue=$('journal-trip').value;
+  select.replaceChildren(); $('journal-trip').replaceChildren();
+  for(const [target,label,value] of [[select,'No trip',''],[$('journal-trip'),'All trips',''],[$('journal-trip'),'No trip','none']]) {
+    const option=node('option','',label); option.value=value; target.append(option);
+  }
+  for(const trip of state.trips || []) {
+    for(const target of [select,$('journal-trip')]) {
+      const option=node('option','',trip.name+(trip.completed?' · completed':'')); option.value=trip.id; target.append(option);
+    }
+  }
+  select.value=selected; $('journal-trip').value=filterValue;
+  select.disabled=!tripsLoaded;
+  if(tripsLoaded) entryTripInitialized=true;
+  $('journal-trip').hidden=Boolean(tripPageId);
+}
+function tripDates(trip) {
+  const readable=value=>new Date(value+'T12:00:00+05:30').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'});
+  return trip.startDate && trip.endDate ? readable(trip.startDate)+' – '+readable(trip.endDate) : trip.startDate ? 'From '+readable(trip.startDate) : trip.endDate ? 'Until '+readable(trip.endDate) : 'Dates not set';
+}
+function tripStatusLabel(trip) { return trip.completed?'Completed':trip.id===state.activeTripId?'Active · default for new entries':'Open'; }
+function tripControls(trip) {
+  const controls=node('div','trip-actions');
+  const edit=action('Edit trip',()=>openTrip(trip)); edit.id='edit-trip-'+trip.id; controls.append(edit);
+  if(!trip.completed) { const active=action(trip.id===state.activeTripId?'Stop using as default':'Make active',()=>changeTripStatus(trip,trip.id===state.activeTripId?'deactivate':'activate')); active.id='active-trip-'+trip.id; controls.append(active); }
+  const complete=action(trip.completed?'Reopen trip':'Mark completed',()=>changeTripStatus(trip,trip.completed?'reopen':'complete')); complete.id='complete-trip-'+trip.id; controls.append(complete);
+  return controls;
+}
+function renderTripPages() {
+  const focused=document.activeElement?.id;
+  $('nav-journal').toggleAttribute('aria-current',false); $('nav-trips').toggleAttribute('aria-current',false);
+  $(tripsPage||tripPageId?'nav-trips':'nav-journal').setAttribute('aria-current','page');
+  const active=state.trips.find(t=>t.id===state.activeTripId);
+  $('active-trip-note').hidden=tripsPage||Boolean(tripPageId)||compactEntry||!active;
+  $('active-trip-note').textContent=active?'Active trip: '+active.name+'. New forms preselect it; your current selection stays as shown.':'';
+  if(tripsPage) {
+    $('page-heading').textContent='A place for every journey.';
+    $('page-description').textContent='Group your expenses, money lent, and reminders. Every entry stays in your main journal too.';
+    $('trips-section').hidden=false;
+    const cards=$('trip-cards'); cards.replaceChildren();
+    if(!state.trips.length) cards.append(node('p','empty','Create your first trip. Give it a name, then start adding entries.'));
+    const ordered=[...state.trips].sort((a,b)=>Number(b.id===state.activeTripId)-Number(a.id===state.activeTripId)||Number(a.completed)-Number(b.completed)||b.createdAt.localeCompare(a.createdAt));
+    for(const trip of ordered) {
+      const card=node('article','trip-card'), link=node('a','trip-card-title',trip.name);
+      link.href='/trips/'+trip.id;
+      card.append(node('span','trip-badge',tripStatusLabel(trip)),link,node('p','item-meta',trip.destination||'Destination not set'),node('p','item-meta',tripDates(trip)));
+      const summary=pocketJournal.tripSummary(state,trip.id);
+      card.append(node('strong','trip-card-spending',fmt(summary.spending)),node('p','field-note','Spent across all dates'),node('p','item-meta',fmt(summary.outstanding)+' to collect · '+summary.reminders+' open reminders'),tripControls(trip));
+      cards.append(card);
+    }
+  } else if(tripPageId) {
+    const trip=state.trips.find(t=>t.id===tripPageId);
+    if(!trip) { window.location.replace('/trips'); return; }
+    document.title=trip.name+' · Pocket';
+    $('page-heading').textContent=trip.name;
+    $('page-description').textContent=[trip.destination,tripDates(trip)].filter(Boolean).join(' · ');
+    $('journal-heading').textContent='Trip journal';
+    $('trip-detail-controls').hidden=false;
+    $('trip-state').textContent=tripStatusLabel(trip);
+    $('trip-actions').replaceChildren(tripControls(trip));
+  }
+  if(focused && $(focused)) $(focused).focus({preventScroll:true});
+}
+function openTrip(trip=null) {
+  tripEditing=trip?.id||null; $('trip-form').reset(); error('trip-error','');
+  $('trip-dialog-heading').textContent=trip?'Edit trip':'Create trip';
+  $('trip-name').value=trip?.name||''; $('trip-destination').value=trip?.destination||'';
+  $('trip-start').value=trip?.startDate||''; $('trip-end').value=trip?.endDate||'';
+  $('trip-dialog').showModal(); $('trip-name').focus();
+}
+async function changeTripStatus(trip,action) {
+  if(tripSaving) return;
+  tripSaving=true; document.querySelectorAll('.trip-actions button').forEach(b=>b.disabled=true);
+  try { state=await api('/api/trip-status',{id:trip.id,action}); saved(action==='activate'?'Active trip updated':action==='deactivate'?'Trip default cleared':action==='complete'?'Trip completed':'Trip reopened'); }
+  catch(e) { error('global-error',e.message); }
+  finally { tripSaving=false; document.querySelectorAll('.trip-actions button').forEach(b=>b.disabled=false); }
 }
 function setKind(value) {
-  kind=value;
+  kind=tripPageId && value==='mandate' ? 'expense' : value;
   const mandate=kind==='mandate';
+  $('trip-field').hidden=mandate;
   document.querySelectorAll('[data-kind]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.kind===kind)));
   $('amount-field').hidden=kind==='reminder'; $('entry-amount').required=kind!=='reminder';
   $('person-field').hidden=kind!=='loan'; $('entry-person').required=kind==='loan';
@@ -97,13 +200,14 @@ function renderCategories() {
 }
 function resetForm() {
   quickDraft=null;
-  editing=null; $('entry-form').reset(); $('entry-date').value=today(); $('quick-entry').value='';
+  editing=null; $('entry-form').reset(); syncTripSelectors(true); $('entry-date').value=today(); $('quick-entry').value='';
   updateSubcategories('entry');
   $('cancel-edit').hidden=true; $('entry-heading').textContent='Write it down';
   $('parse-hint').textContent='Or fill in the fields below.'; error('form-error',''); setKind('expense');
 }
 function editEntry(entry) {
   quickDraft=null;
+  entryTripInitialized=true; $('entry-trip').value=entry.tripId||'';
   editing=entry.id; setKind(entry.kind); $('entry-heading').textContent='Edit entry';
   $('entry-title').value=entry.title; $('entry-amount').value=entry.amountMinor?String(entry.amountMinor/100):'';
   $('entry-person').value=entry.person; $('entry-category').value=entry.category||'Other'; updateSubcategories('entry',entry.subcategory||''); $('entry-date').value=entry.date;
@@ -113,7 +217,7 @@ function editEntry(entry) {
 }
 function render() {
   if (leaving) return;
-  if (!Array.isArray(state.categories) || !Array.isArray(state.mandates)) {
+  if (!Array.isArray(state.categories) || !Array.isArray(state.mandates) || !Array.isArray(state.trips)) {
     $('sync-status').textContent='Restart Pocket';
     error('global-error','Pocket is still running the older server. Close the old Pocket process, start it again, then refresh this page.');
     return;
@@ -124,12 +228,24 @@ function render() {
     $('account-name').title = state.account.username;
     $('open-obsidian').hidden = !state.account.isOwner;
   }
+  tripsLoaded=true; syncTripSelectors(); renderTripPages();
   renderCategories();
+  if (tripsPage) {
+    $('sync-status').textContent=state.sync.enabled&&!state.sync.ok?'Saved · export needs attention':state.storageLocation==='vps'?'All changes saved':'Saved on this Mac';
+    error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
+    return;
+  }
+  if (compactEntry) {
+    $('sync-status').textContent = 'Online';
+    return;
+  }
   syncMonthFilter();
-  const month=today().slice(0,7), expenses=state.entries.filter(e=>e.kind==='expense'&&e.date.startsWith(month));
-  const loans=state.entries.filter(e=>e.kind==='loan'&&left(e)>0), reminders=state.entries.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
+  const source=tripPageId ? pocketJournal.tripState(state,tripPageId).entries : state.entries;
+  const month=today().slice(0,7), expenses=source.filter(e=>e.kind==='expense'&&(tripPageId||e.date.startsWith(month)));
+  const loans=source.filter(e=>e.kind==='loan'&&left(e)>0), reminders=source.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
   $('spent').textContent=fmt(expenses.reduce((s,e)=>s+e.amountMinor,0));
-  $('spent-meta').textContent=expenses.length?`${expenses.length} expense${expenses.length===1?'':'s'} this month`:'No expenses this month';
+  $('spent-label').textContent=tripPageId?'Trip spending':'Spent this month';
+  $('spent-meta').textContent=`${expenses.length} expense${expenses.length===1?'':'s'} ${tripPageId?'across all dates':'this month'}`;
   $('outstanding').textContent=fmt(loans.reduce((s,e)=>s+left(e),0));
   $('loan-meta').textContent=loans.length?`${loans.length} loan${loans.length===1?'':'s'} still open`:'No open loans';
   $('reminder-count').textContent=String(reminders.length);
@@ -155,6 +271,8 @@ function render() {
     const item=node('article','journal-item'), icon=node('div','entry-icon '+entry.kind,entry.kind==='loan'?'↙':entry.kind==='reminder'?'◷':'↗'); icon.setAttribute('aria-hidden','true');
     const main=node('div','item-main'), amount=node('div','item-amount');
     main.append(node('div','item-title',entry.title));
+    const linkedTrip=state.trips.find(t=>t.id===entry.tripId);
+    if(linkedTrip&&!tripPageId) { const badge=node('a','trip-badge',linkedTrip.name); badge.href='/trips/'+linkedTrip.id; main.append(badge); }
     main.append(node('div','item-meta',[shortDate(entry.date),entry.kind==='loan'?`Lent to ${entry.person}`:entry.kind==='expense'?entry.category+(entry.subcategory?' → '+entry.subcategory:''):'Reminder',entry.mandateMonth?'Mandate '+entry.mandateMonth:'',entry.kind==='reminder'&&entry.reminderDone?'Completed':''].filter(Boolean).join(' · ')));
     if(entry.kind!=='reminder') { const balance=entry.kind==='loan'?left(entry):entry.amountMinor; amount.textContent=fmt(balance); amount.append(node('small',entry.kind==='loan'&&balance===0?'repaid-status':'',entry.kind==='loan'?(balance===0?'✓ Repaid':'still to collect'):'spent')); }
     else { amount.append(node('small','',entry.reminderDone?'Done':'Reminder')); }
@@ -265,7 +383,8 @@ function parseQuick() {
   if(editing) { $('parse-hint').textContent='Finish or cancel your edit before starting a new quick entry.';return; }
   const lower=text.toLowerCase();
   const parsedKind=kind==='mandate'?'mandate':/\b(remind|reminder)\b/.test(lower)?'reminder':/\b(lent|lend|loan|loaned)\b/.test(lower)?'loan':'expense';
-  $('entry-form').reset();setKind(parsedKind);$('entry-date').value=today();
+  const selectedTrip=$('entry-trip').value;
+  $('entry-form').reset();$('entry-trip').value=selectedTrip;setKind(parsedKind);$('entry-date').value=today();
   const money=parsedKind==='reminder'?null:parseQuickMoney(text);
   if(money?.amount) $('entry-amount').value=money.amount;
   if(parsedKind==='loan') { const person=text.match(/\bto\s+(.+?)(?=\s+(?:for|on|by|due|tomorrow|today|remind|next)\b|[,;]|$)/i); if(person) $('entry-person').value=person[1].trim(); }
@@ -308,6 +427,8 @@ document.querySelectorAll('[data-kind]').forEach(b=>b.addEventListener('click',(
 document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>selectFilter(b.dataset.filter)));
 document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click',()=>{$('quick-entry').value={expense:'Bought headphones for ₹2,500',loan:'Lent ₹5,000 to Rahul',reminder:'Remind me to pay rent tomorrow at 9am'}[b.dataset.example];markQuickDraftChanged();$('quick-entry').focus();}));
 $('quick-entry').addEventListener('input',markQuickDraftChanged);
+$('entry-trip').addEventListener('change',()=>{entryTripInitialized=true;});
+$('journal-trip').addEventListener('change',()=>{clearJournalTotal();render();});
 $('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',()=>{clearJournalTotal();render();});$('journal-month').addEventListener('change',()=>{clearJournalTotal();render();});$('calculate-total').addEventListener('click',calculateJournalTotal);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
 $('close-settle').addEventListener('click',closeSettle);$('cancel-settle').addEventListener('click',closeSettle);$('confirm-settle').addEventListener('click',settleLoan);
 $('settle-dialog').addEventListener('close',()=>{settleId=null;error('settle-error','');});
@@ -327,19 +448,42 @@ $('mandate-form').addEventListener('submit',async event=>{
   try {state=await api('/api/mandates',{id:mandateEditing,title:$('mandate-title').value,amount:$('mandate-amount').value,firstDueDate:$('mandate-first-date').value,category:$('mandate-category').value,subcategory:$('mandate-subcategory').value});$('mandate-dialog').close();saved(mandateEditing?'Mandate updated':'Mandate added');}
   catch(e){error('mandate-error',e.message);}finally{$('save-mandate').disabled=false;}
 });
-$('entry-form').addEventListener('submit',async event=>{
-  event.preventDefault();error('form-error',''); const button=$('save-entry');button.disabled=true;
+async function submitEntry(event) {
+  event.preventDefault();
+  if (entrySaving || leaving) return;
+  if (!accountReady) { error('form-error','Connect to Pocket before saving.'); return; }
+  if (!$('entry-form').reportValidity()) return;
+  error('form-error',''); const button=$('save-entry');button.disabled=true; entrySaving=true;
+  const panel=document.querySelector('.entry-panel'); panel.inert=true; panel.setAttribute('aria-busy','true');
   try {
     if(kind==='mandate') {
       state=await api('/api/mandates',{title:$('entry-title').value,amount:$('entry-amount').value,firstDueDate:$('entry-date').value,category:$('entry-category').value||'Other',subcategory:$('entry-subcategory').value});
-      resetForm(); selectFilter('mandate'); toast('Mandate added'); return;
+      resetForm(); if (!compactEntry) selectFilter('mandate'); saved('Mandate added'); return;
     }
     const wasEditing=Boolean(editing);
-    state=await api('/api/entries',{id:editing,kind,title:$('entry-title').value,amount:$('entry-amount').value,person:$('entry-person').value,category:$('entry-category').value||'Other',subcategory:$('entry-subcategory').value,date:$('entry-date').value,dueAt:$('has-reminder').checked?$('entry-due').value:'',notes:$('entry-notes').value});
+    state=await api('/api/entries',{id:editing,kind,title:$('entry-title').value,amount:$('entry-amount').value,person:$('entry-person').value,category:$('entry-category').value||'Other',subcategory:$('entry-subcategory').value,date:$('entry-date').value,dueAt:$('has-reminder').checked?$('entry-due').value:'',notes:$('entry-notes').value,tripId:$('entry-trip').value||null});
     resetForm();saved(wasEditing?'Entry updated':'Entry saved');
   } catch(e) {error('form-error',e.message);}
-  finally {button.disabled=false;}
+  finally {
+    entrySaving=false; button.disabled=false; panel.inert=false; panel.removeAttribute('aria-busy');
+    if (compactEntry && !leaving && !$('form-error').textContent) $('quick-entry').focus();
+  }
+}
+$('entry-form').addEventListener('submit',submitEntry);
+$('new-trip').addEventListener('click',()=>openTrip());
+$('close-trip').addEventListener('click',()=>$('trip-dialog').close());
+$('trip-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(tripSaving || !$('trip-form').reportValidity()) return;
+  tripSaving=true; $('save-trip').disabled=true; error('trip-error','');
+  const form=$('trip-form'); form.inert=true;
+  try {
+    state=await api('/api/trips',{id:tripEditing,name:$('trip-name').value,destination:$('trip-destination').value,startDate:$('trip-start').value,endDate:$('trip-end').value});
+    $('trip-dialog').close(); saved(tripEditing?'Trip updated':'Trip created');
+  } catch(e) { error('trip-error',e.message); }
+  finally { tripSaving=false; $('save-trip').disabled=false; form.inert=false; }
 });
+
 $('repay-form').addEventListener('submit',async event=>{
   event.preventDefault();error('repay-error','');$('save-repayment').disabled=true;
   try {state=await api('/api/repayments',{entryId:repayId,amount:$('repay-amount').value,date:$('repay-date').value,notes:$('repay-notes').value});$('repay-dialog').close();saved('Repayment recorded');}
@@ -347,19 +491,45 @@ $('repay-form').addEventListener('submit',async event=>{
 });
 $('today').textContent=new Date().toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'});
 resetForm();
-api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(e=>{if(!leaving){error('global-error','Could not connect. Check that Pocket is running, then refresh. '+e.message);$('sync-status').textContent='Offline';}});
-setInterval(()=>{if(expectedAccount&&!document.hidden) api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(()=>{});else render();},60000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden) api('/api/state').then(data=>{state=data;clearJournalTotal();render();}).catch(()=>{});});
+let accountRefresh = null;
+function refreshAccount() {
+  if (leaving) return Promise.resolve(false);
+  if (accountRefresh) return accountRefresh;
+  accountRefresh = (async () => {
+    const revision=mutationRevision;
+    try {
+      const data=await api('/api/state');
+      if (leaving) return false;
+      // A refresh must not replace a newer mutation response or a user's edited fields.
+      if (!entrySaving && revision===mutationRevision) { state=data;clearJournalTotal();render(); }
+      accountReady=true; error('global-error',''); $('retry-connection').hidden=true; return true;
+    } catch(e) {
+      accountReady=false;
+      if(!leaving) { error('global-error','Could not connect. Check your connection and try again.'); $('sync-status').textContent='Offline'; $('retry-connection').hidden=false; }
+      return false;
+    } finally { accountRefresh=null; }
+  })();
+  return accountRefresh;
+}
+refreshAccount();
+$('retry-connection').addEventListener('click',refreshAccount);
+setInterval(()=>{if(!document.hidden) refreshAccount();},60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) refreshAccount();});
+async function logoutAccount() {
+  if (entrySaving) { error('global-error','Wait for the save to finish before logging out.'); return false; }
+  const button=$('logout'); button.disabled=true;
+  try {
+    await api('/logout', {});
+    if ('BroadcastChannel' in window) { const channel=new BroadcastChannel('pocket-auth');channel.postMessage('changed');channel.close(); }
+    leaveAccount(); return true;
+  } catch(e) { if (!leaving) { error('global-error',e.message);button.disabled=false; } return leaving; }
+}
 if (expectedAccount) {
   const channel = 'BroadcastChannel' in window ? new BroadcastChannel('pocket-auth') : null;
-  if (channel) channel.onmessage = () => leaveAccount('/');
-  $('logout').addEventListener('click', async () => {
-    const button = $('logout'); button.disabled = true;
-    try { await api('/logout', {}); channel?.postMessage('changed'); leaveAccount(); }
-    catch (e) { if (!leaving) { error('global-error', e.message); button.disabled = false; } }
-  });
+  if (channel) channel.onmessage = () => leaveAccount(accountHome);
+  $('logout').addEventListener('click', logoutAccount);
   window.addEventListener('pagehide', () => { document.documentElement.style.visibility = 'hidden'; });
-  window.addEventListener('pageshow', event => { if (event.persisted) leaveAccount('/'); });
+  window.addEventListener('pageshow', event => { if (event.persisted) leaveAccount(accountHome); });
 }
 
 // Owner-only connection controls. Tokens live only in this open dialog, never browser storage.
