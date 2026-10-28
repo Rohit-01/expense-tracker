@@ -53,7 +53,23 @@ var pocketJournal = (() => {
     };
   }
 
-  return {months, entries, mandates, totalMinor, tripState, tripSummary};
+  function summary(state, month, tripId) {
+    const selected=entries(state,'all','',month,tripId);
+    const remaining=e=>e.amountMinor-(state.repayments||[]).filter(r=>r.entryId===e.id).reduce((sum,r)=>sum+r.amountMinor,0);
+    const expenses=selected.filter(e=>e.kind==='expense');
+    const loans=selected.filter(e=>e.kind==='loan'&&remaining(e)>0);
+    const reminders=selected.filter(e=>e.dueAt&&!e.reminderDone&&(e.kind!=='loan'||remaining(e)>0));
+    return {expenses,loans,reminders,spending:expenses.reduce((sum,e)=>sum+e.amountMinor,0),outstanding:loans.reduce((sum,e)=>sum+remaining(e),0)};
+  }
+
+  function summaryMonths(state,currentMonth,selectedMonth='',tripId='') {
+    const values=new Set([currentMonth]);
+    if(selectedMonth) values.add(selectedMonth); // Keep an empty selection after its last entry is trashed.
+    for(const entry of entries(state,'all','','',tripId)) if(/^\d{4}-\d{2}/.test(entry.date||'')) values.add(entry.date.slice(0,7));
+    return [...values].sort().reverse();
+  }
+
+  return {months, entries, mandates, totalMinor, tripState, tripSummary, summary, summaryMonths};
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = pocketJournal;

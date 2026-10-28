@@ -1,14 +1,17 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, settleId = null, mandateEditing = null;
+let state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, trash: [], sync: {}}, kind = 'expense', editing = null, filter = 'all', repayId = null, settleId = null, mandateEditing = null;
 let toastTimer;
 let quickDraft = null;
 const compactEntry = document.body.dataset.pocketView === 'quick-entry';
 const tripsPage = document.body.dataset.pocketView === 'trips';
+const trashPage = document.body.dataset.pocketView === 'trash';
 const tripPageId = document.body.dataset.tripId || '';
+let summaryMonth = tripPageId ? '' : today().slice(0,7), summaryTrip = tripPageId;
+let deletingId = null, trashBusy = false;
 let tripsLoaded = false, entryTripInitialized = false, tripEditing = null, tripSaving = false;
 let entrySaving = false, accountReady = false, mutationRevision = 0;
-const accountHome = compactEntry ? '/quick-entry' : tripPageId ? '/trips/'+tripPageId : tripsPage ? '/trips' : '/';
+const accountHome = compactEntry ? '/quick-entry' : tripPageId ? '/trips/'+tripPageId : tripsPage ? '/trips' : trashPage ? '/trash' : '/';
 const accountLogin = accountHome === '/' ? '/login' : '/login?next='+accountHome;
 const expectedAccount = document.querySelector('meta[name="pocket-account"]')?.content;
 let leaving = false;
@@ -20,7 +23,7 @@ function leaveAccount(destination = accountLogin) {
   document.querySelectorAll('form').forEach(form => form.reset());
   $('quick-entry').value = '';
   document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
-  state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, sync: {}};
+  state = {entries: [], repayments: [], categories: [], mandates: [], trips: [], activeTripId: null, trash: [], sync: {}};
   document.body.replaceChildren(node('p', 'notice', 'Opening your account…'));
   window.location.replace(destination);
 }
@@ -107,10 +110,10 @@ function tripControls(trip) {
 }
 function renderTripPages() {
   const focused=document.activeElement?.id;
-  $('nav-journal').toggleAttribute('aria-current',false); $('nav-trips').toggleAttribute('aria-current',false);
-  $(tripsPage||tripPageId?'nav-trips':'nav-journal').setAttribute('aria-current','page');
+  for(const id of ['nav-journal','nav-trips','nav-trash']) $(id).removeAttribute('aria-current');
+  $(trashPage?'nav-trash':tripsPage||tripPageId?'nav-trips':'nav-journal').setAttribute('aria-current','page');
   const active=state.trips.find(t=>t.id===state.activeTripId);
-  $('active-trip-note').hidden=tripsPage||Boolean(tripPageId)||compactEntry||!active;
+  $('active-trip-note').hidden=tripsPage||trashPage||Boolean(tripPageId)||compactEntry||!active;
   $('active-trip-note').textContent=active?'Active trip: '+active.name+'. New forms preselect it; your current selection stays as shown.':'';
   if(tripsPage) {
     $('page-heading').textContent='A place for every journey.';
@@ -153,6 +156,115 @@ async function changeTripStatus(trip,action) {
   try { state=await api('/api/trip-status',{id:trip.id,action}); saved(action==='activate'?'Active trip updated':action==='deactivate'?'Trip default cleared':action==='complete'?'Trip completed':'Trip reopened'); }
   catch(e) { error('global-error',e.message); }
   finally { tripSaving=false; document.querySelectorAll('.trip-actions button').forEach(b=>b.disabled=false); }
+}
+function renderSummary() {
+  const monthSelect=$('summary-month'), tripSelect=$('summary-trip'), current=today().slice(0,7);
+  monthSelect.replaceChildren();
+  const all=node('option','','All months'); all.value='';monthSelect.append(all);
+  for(const value of pocketJournal.summaryMonths(state,current,summaryMonth,tripPageId)) {
+    const option=node('option','',value===current?'This month · '+monthName(value):monthName(value));option.value=value;monthSelect.append(option);
+  }
+  monthSelect.value=summaryMonth;
+  tripSelect.replaceChildren();
+  if(!tripPageId) for(const [value,label] of [['','All trips'],['none','No trip']]) {const option=node('option','',label);option.value=value;tripSelect.append(option);}
+  for(const trip of state.trips) if(!tripPageId||trip.id===tripPageId) {
+    const option=node('option','',trip.name+(trip.completed?' · completed':''));option.value=trip.id;tripSelect.append(option);
+  }
+  tripSelect.value=summaryTrip;tripSelect.disabled=Boolean(tripPageId);
+  const period=summaryMonth?monthName(summaryMonth):'All months';
+  const tripLabel=summaryTrip==='none'?'No trip':state.trips.find(t=>t.id===summaryTrip)?.name||'All trips';
+  $('summary-scope').textContent=period+' · '+tripLabel;
+  const cards=pocketJournal.summary(state,summaryMonth,summaryTrip);
+  $('spent-label').textContent=tripPageId?'Trip spending':'Spending';
+  $('spent').textContent=fmt(cards.spending);
+  $('spent-meta').textContent=`${cards.expenses.length} expense${cards.expenses.length===1?'':'s'} · ${period}`;
+  $('outstanding').textContent=fmt(cards.outstanding);
+  $('loan-meta').textContent=`${cards.loans.length} open loan${cards.loans.length===1?'':'s'} in this selection`;
+  $('reminder-count').textContent=String(cards.reminders.length);
+  const overdue=cards.reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
+  $('reminder-meta').textContent=overdue?`${overdue} past due in this selection`:cards.reminders.length?'Open in this selection':'No open reminders in this selection';
+}
+function deleteButton(entry) {
+  const button=action('Delete',()=>openDelete(entry));button.classList.add('danger-text');button.disabled=trashBusy;
+  button.setAttribute('aria-label','Delete '+entry.title);return button;
+}
+function openDelete(entry) {
+  if(trashBusy||entrySaving) return;
+  deletingId=entry.id;error('delete-error','');
+  const label=entry.kind==='loan'?'Money lent':entry.kind==='reminder'?'Reminder':'Expense';
+  $('delete-summary').textContent=label+' · '+entry.title+(entry.kind==='reminder'?'':' · '+fmt(entry.amountMinor));
+  const repayments=state.repayments.filter(r=>r.entryId===entry.id);
+  const detail=[];
+  if(entry.kind==='loan') detail.push(`${entry.person} · ${fmt(left(entry))} outstanding. All ${repayments.length} repayment records move with this loan.`);
+  if(entry.dueAt) detail.push('Its reminder also moves to Trash. Previously imported calendar events are unchanged.');
+  const trip=state.trips.find(t=>t.id===entry.tripId);if(trip) detail.push('Trip: '+trip.name+'.');
+  $('delete-details').textContent=detail.join(' ');
+  $('delete-mandate').hidden=!entry.mandateId;
+  $('delete-mandate').textContent=entry.mandateId?'The '+entry.mandateMonth+' mandate payment will return to unpaid, even if the plan is paused. Restoring is blocked while a replacement payment exists.':'';
+  $('delete-dialog').showModal();$('cancel-delete').focus();
+}
+function closeDelete() { if(trashBusy) return;deletingId=null;$('delete-dialog').close(); }
+function setTrashBusy(busy) {
+  trashBusy=busy;
+  for(const id of ['confirm-delete','cancel-delete','close-delete']) $(id).disabled=busy;
+  $('delete-dialog').setAttribute('aria-busy',String(busy));
+  document.querySelectorAll('.restore-button,.danger-text').forEach(button=>button.disabled=busy);
+}
+async function confirmDelete() {
+  if(trashBusy||!deletingId) return;
+  const identifier=deletingId;setTrashBusy(true);error('delete-error','');
+  try {
+    const updated=await api('/api/trash',{id:identifier});
+    if(leaving) return;
+    state=updated;
+    if(editing===identifier) resetForm();
+    deletingId=null;$('delete-dialog').close();saved('Moved to Trash');
+    $('journal-heading').focus({preventScroll:true});
+  } catch(e) { if(!leaving) error('delete-error',e.message); }
+  finally { if(!leaving) setTrashBusy(false); }
+}
+function renderTrash() {
+  const focused=document.activeElement?.id;
+  document.title='Trash · Pocket';$('page-heading').textContent='Room to change your mind.';
+  $('page-description').textContent='Deleted entries are kept here, outside your journals and totals. Restore them whenever you need.';
+  $('trash-section').hidden=false;
+  $('trash-count').textContent=state.trash.length+' '+(state.trash.length===1?'record':'records');
+  const list=$('trash-list');list.replaceChildren();
+  if(!state.trash.length) list.append(node('p','empty','Trash is empty. Deleted expenses, loans, and reminders will appear here.'));
+  for(const bundle of state.trash) {
+    const entry=bundle.entry, card=node('article','trash-record'), main=node('div','trash-main');
+    main.append(node('h3','item-title',entry.title));
+    const trip=state.trips.find(t=>t.id===entry.tripId), label=entry.kind==='loan'?'Money lent':entry.kind==='reminder'?'Reminder':'Expense';
+    main.append(node('p','item-meta',`${label} · Entry ${new Date(entry.date+'T12:00:00+05:30').toLocaleDateString('en-IN',{dateStyle:'medium',timeZone:'Asia/Kolkata'})} · ${trip?.name||'No trip'}`));
+    const trashedDate=new Date(bundle.trashedAt).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Kolkata'});
+    main.append(node('p','item-meta','Deleted '+trashedDate+' IST'));
+    if(entry.kind==='expense') main.append(node('p','item-meta',[entry.category,entry.subcategory].filter(Boolean).join(' → ')));
+    if(entry.kind!=='reminder') main.append(node('strong','trash-amount',fmt(entry.amountMinor)+(entry.kind==='loan'?' lent to '+entry.person:'')));
+    if(entry.kind==='loan') {
+      const received=bundle.repayments.reduce((sum,r)=>sum+r.amountMinor,0);
+      main.append(node('p','item-meta',fmt(received)+' received · '+fmt(entry.amountMinor-received)+' outstanding when deleted'));
+      if(bundle.repayments.length) {const details=node('details','repay-history'), ul=node('ul');details.append(node('summary','',bundle.repayments.length+' repayments'));for(const r of bundle.repayments) ul.append(node('li','',`${shortDate(r.date)} · ${fmt(r.amountMinor)}${r.notes?' · '+r.notes:''}`));details.append(ul);main.append(details);}
+    }
+    if(entry.notes) main.append(node('p','item-note',entry.notes));
+    if(entry.dueAt) main.append(node('p','item-meta',`Reminder · ${dueText(entry.dueAt)} · ${entry.reminderDone?'Completed':'Not marked done'}`));
+    if(bundle.mandatePayment) main.append(node('p','field-note','Mandate payment · '+bundle.mandatePayment.period+'. Restore only if this month has no replacement payment.'));
+    const button=node('button','button compact restore-button','Restore');button.type='button';button.id='restore-'+bundle.id;button.disabled=trashBusy;
+    button.setAttribute('aria-label','Restore '+entry.title);button.addEventListener('click',()=>restoreRecord(bundle.id));
+    const message=node('div','notice error');message.id='restore-error-'+bundle.id;message.hidden=true;message.setAttribute('role','alert');message.tabIndex=-1;
+    main.append(message);card.append(main,button);list.append(card);
+  }
+  if(focused&&$(focused)) $(focused).focus({preventScroll:true});
+}
+async function restoreRecord(identifier) {
+  if(trashBusy) return;
+  setTrashBusy(true);error('restore-error-'+identifier,'');
+  try {
+    const updated=await api('/api/restore',{id:identifier});
+    if(leaving) return;
+    state=updated;saved('Record restored');
+    $('trash-heading').focus({preventScroll:true});
+  } catch(e) { if(!leaving) {error('restore-error-'+identifier,e.message);$('restore-error-'+identifier)?.focus();} }
+  finally { if(!leaving) setTrashBusy(false); }
 }
 function setKind(value) {
   kind=tripPageId && value==='mandate' ? 'expense' : value;
@@ -217,7 +329,7 @@ function editEntry(entry) {
 }
 function render() {
   if (leaving) return;
-  if (!Array.isArray(state.categories) || !Array.isArray(state.mandates) || !Array.isArray(state.trips)) {
+  if (!Array.isArray(state.categories) || !Array.isArray(state.mandates) || !Array.isArray(state.trips) || !Array.isArray(state.trash)) {
     $('sync-status').textContent='Restart Pocket';
     error('global-error','Pocket is still running the older server. Close the old Pocket process, start it again, then refresh this page.');
     return;
@@ -230,7 +342,8 @@ function render() {
   }
   tripsLoaded=true; syncTripSelectors(); renderTripPages();
   renderCategories();
-  if (tripsPage) {
+  if (tripsPage || trashPage) {
+    if(trashPage) renderTrash();
     $('sync-status').textContent=state.sync.enabled&&!state.sync.ok?'Saved · export needs attention':state.storageLocation==='vps'?'All changes saved':'Saved on this Mac';
     error('global-error',state.sync.enabled&&!state.sync.ok?state.sync.message:'');
     return;
@@ -241,16 +354,8 @@ function render() {
   }
   syncMonthFilter();
   const source=tripPageId ? pocketJournal.tripState(state,tripPageId).entries : state.entries;
-  const month=today().slice(0,7), expenses=source.filter(e=>e.kind==='expense'&&(tripPageId||e.date.startsWith(month)));
-  const loans=source.filter(e=>e.kind==='loan'&&left(e)>0), reminders=source.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
-  $('spent').textContent=fmt(expenses.reduce((s,e)=>s+e.amountMinor,0));
-  $('spent-label').textContent=tripPageId?'Trip spending':'Spent this month';
-  $('spent-meta').textContent=`${expenses.length} expense${expenses.length===1?'':'s'} ${tripPageId?'across all dates':'this month'}`;
-  $('outstanding').textContent=fmt(loans.reduce((s,e)=>s+left(e),0));
-  $('loan-meta').textContent=loans.length?`${loans.length} loan${loans.length===1?'':'s'} still open`:'No open loans';
-  $('reminder-count').textContent=String(reminders.length);
-  const overdue=reminders.filter(e=>dueDate(e.dueAt)<new Date()).length;
-  $('reminder-meta').textContent=overdue?`${overdue} past due · ready to review`:reminders.length?'A little nudge for later':'Nothing on your mind';
+  const reminders=source.filter(isActive).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
+  renderSummary();
   const showingMandates=filter==='mandate';
   const visible=visibleJournal(), visibleCount=showingMandates?visible.mandateViews.length:visible.entries.length;
   $('entry-count').textContent=showingMandates?`${visibleCount} ${visibleCount===1?'mandate':'mandates'}`:`${visibleCount} ${visibleCount===1?'entry':'entries'}`;
@@ -286,7 +391,7 @@ function render() {
       if(repayments.length) { const details=node('details','repay-history'), ul=node('ul'); details.append(node('summary','',`${repayments.length} repayment${repayments.length===1?'':'s'}`)); for(const r of repayments) ul.append(node('li','',`${shortDate(r.date)} · ${fmt(r.amountMinor)}${r.notes?' · '+r.notes:''}`)); details.append(ul);main.append(details); }
     }
     if(entry.dueAt) main.append(node('div','item-meta',`${entry.reminderDone?'Reminder completed':'Reminder'} · ${dueText(entry.dueAt)}`));
-    const actions=node('div','item-actions'); actions.append(action('Edit',()=>editEntry(entry)));
+    const actions=node('div','item-actions'); actions.append(action('Edit',()=>editEntry(entry)),deleteButton(entry));
     if(entry.kind==='loan'&&left(entry)>0) actions.append(action('Record repayment',()=>openRepay(entry)),action('Mark repaid',()=>openSettle(entry)));
     if(entry.dueAt) {
       const link=node('a','text-button','Calendar event ↗'); link.href='/api/reminder.ics?id='+encodeURIComponent(entry.id);link.download='lifeos-reminder.ics';actions.append(link);
@@ -324,7 +429,7 @@ function renderMandates(views) {
     if(!occurrences.length) rows.append(node('p','field-note','The first month has not arrived yet.'));
     for(const occurrence of occurrences) {
       const row=node('div','mandate-month');
-      const details=node('div'); details.append(node('strong','',new Date(occurrence.dueDate+'T12:00:00+05:30').toLocaleDateString('en-IN',{month:'long',year:'numeric',timeZone:'Asia/Kolkata'})),node('span','item-meta',`Due ${shortDate(occurrence.dueDate)}${occurrence.status==='paid'?' · Recorded '+fmt(occurrence.paidAmountMinor):occurrence.dueDate<today()?' · Overdue':''}`));
+      const details=node('div'); details.append(node('strong','',new Date(occurrence.dueDate+'T12:00:00+05:30').toLocaleDateString('en-IN',{month:'long',year:'numeric',timeZone:'Asia/Kolkata'})),node('span','item-meta',`Due ${shortDate(occurrence.dueDate)}${occurrence.paymentReversed?' · Payment moved to Trash':''}${occurrence.status==='paid'?' · Recorded '+fmt(occurrence.paidAmountMinor):occurrence.dueDate<today()?' · Overdue':''}`));
       row.append(details);
       if(occurrence.status==='paid') row.append(node('span','mandate-paid','✓ Paid'));
       else { const button=node('button','button primary mandate-pay','Paid'); button.type='button'; button.setAttribute('aria-label',`Mark ${mandate.title} for ${occurrence.period} paid`); button.addEventListener('click',()=>payMandate(mandate,occurrence,button)); row.append(button); }
@@ -429,6 +534,8 @@ document.querySelectorAll('[data-example]').forEach(b=>b.addEventListener('click
 $('quick-entry').addEventListener('input',markQuickDraftChanged);
 $('entry-trip').addEventListener('change',()=>{entryTripInitialized=true;});
 $('journal-trip').addEventListener('change',()=>{clearJournalTotal();render();});
+$('summary-month').addEventListener('change',()=>{summaryMonth=$('summary-month').value;renderSummary();});
+$('summary-trip').addEventListener('change',()=>{summaryTrip=tripPageId||$('summary-trip').value;renderSummary();});
 $('parse-entry').addEventListener('click',parseQuick);$('has-reminder').addEventListener('change',updateDue);$('search').addEventListener('input',()=>{clearJournalTotal();render();});$('journal-month').addEventListener('change',()=>{clearJournalTotal();render();});$('calculate-total').addEventListener('click',calculateJournalTotal);$('cancel-edit').addEventListener('click',resetForm);$('close-repay').addEventListener('click',()=>$('repay-dialog').close());
 $('close-settle').addEventListener('click',closeSettle);$('cancel-settle').addEventListener('click',closeSettle);$('confirm-settle').addEventListener('click',settleLoan);
 $('settle-dialog').addEventListener('close',()=>{settleId=null;error('settle-error','');});
@@ -470,6 +577,12 @@ async function submitEntry(event) {
   }
 }
 $('entry-form').addEventListener('submit',submitEntry);
+$('confirm-delete').addEventListener('click',confirmDelete);
+$('cancel-delete').addEventListener('click',closeDelete);
+$('close-delete').addEventListener('click',closeDelete);
+$('delete-dialog').addEventListener('cancel',event=>{if(trashBusy) event.preventDefault();});
+$('delete-dialog').addEventListener('close',()=>{deletingId=null;});
+
 $('new-trip').addEventListener('click',()=>openTrip());
 $('close-trip').addEventListener('click',()=>$('trip-dialog').close());
 $('trip-form').addEventListener('submit',async event=>{
@@ -501,7 +614,7 @@ function refreshAccount() {
       const data=await api('/api/state');
       if (leaving) return false;
       // A refresh must not replace a newer mutation response or a user's edited fields.
-      if (!entrySaving && revision===mutationRevision) { state=data;clearJournalTotal();render(); }
+      if (!entrySaving && !trashBusy && revision===mutationRevision) { state=data;clearJournalTotal();render(); }
       accountReady=true; error('global-error',''); $('retry-connection').hidden=true; return true;
     } catch(e) {
       accountReady=false;

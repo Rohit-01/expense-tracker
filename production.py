@@ -150,6 +150,7 @@ def create_app(settings=None):
     @app.get('/')
     @app.get('/quick-entry')
     @app.get('/trips')
+    @app.get('/trash')
     @app.get('/trips/<identifier>')
     def index(identifier=None):
         if identifier and (page_destination(request.path) == '/' or not any(t['id'] == identifier for t in get_ledger(g.session).state()['trips'])):
@@ -243,6 +244,7 @@ def create_app(settings=None):
         methods = {'entries':ledger.save_entry, 'repayments':ledger.repay, 'reminders':ledger.toggle_reminder,
                    'categories':ledger.save_category, 'mandates':ledger.save_mandate,
                    'trips':ledger.save_trip, 'trip-status':ledger.trip_status,
+                   'trash':ledger.trash_entry, 'restore':ledger.restore_entry,
                    'mandate-status':ledger.toggle_mandate, 'mandate-payments':ledger.pay_mandate}
         if action not in methods:
             return jsonify(error='Not found.'), 404
@@ -251,7 +253,7 @@ def create_app(settings=None):
             methods[action](data)
             return jsonify(state())
         except ValueError as error:
-            if action in {'categories', 'mandates', 'mandate-status', 'mandate-payments', 'trips', 'trip-status'}:
+            if action in {'categories', 'mandates', 'mandate-status', 'mandate-payments', 'trips', 'trip-status', 'trash', 'restore'}:
                 return jsonify(error=str(error)), 400
             return jsonify(error='Check the required fields, dates, and amounts. Repayments cannot exceed the amount outstanding.'), 400
         except (TypeError, OverflowError):

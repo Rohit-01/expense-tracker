@@ -24,13 +24,15 @@ CATEGORIES = ['Shopping', 'Food & groceries', 'Transport', 'Home & bills', 'Heal
 
 def page_destination(path):
     """Exact local page allowlist, shared by both servers and login returns."""
-    if isinstance(path, str) and (path in ('/', '/quick-entry', '/trips') or
+    if isinstance(path, str) and (path in ('/', '/quick-entry', '/trips', '/trash') or
                                  re.fullmatch(r'/trips/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', path)):
         return path
     return '/'
 
 
 def trip_page(page, path):
+    if path == '/trash':
+        return page.replace('<body>', '<body data-pocket-view="trash">')
     if path == '/trips':
         return page.replace('<body>', '<body data-pocket-view="trips">')
     if path.startswith('/trips/'):
@@ -102,6 +104,9 @@ def due(value):
 def snapshot(conn):
     entries = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM entries ORDER BY rowid DESC')]
     repayments = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM repayments ORDER BY rowid DESC')]
+    trash = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM trash ORDER BY rowid DESC')]
+    reversed_payments = {(item['mandatePayment']['mandateId'], item['mandatePayment']['period'])
+                         for item in trash if item['mandatePayment']}
     rows = conn.execute('SELECT parent,name FROM categories ORDER BY rowid').fetchall()
     categories = [{'name': name, 'subcategories': [child for parent, child in rows if parent == name]}
                   for parent, name in rows if parent == '']
@@ -120,10 +125,12 @@ def snapshot(conn):
             payment = payments.get((mandate['id'], period))
             visible = any(window['from'] <= period and (window['to'] is None or period <= window['to'])
                           for window in mandate['activeWindows'])
-            if not visible and not payment:
+            reversed_payment = (mandate['id'], period) in reversed_payments
+            if not visible and not payment and not reversed_payment:
                 continue
             occurrences.append({'period': period, 'dueDate': mandate_due(period, mandate['dueDay']),
                                 'status': 'paid' if payment else 'unpaid',
+                                'paymentReversed': reversed_payment and not payment,
                                 'expenseId': payment['expenseId'] if payment else None,
                                 'paidAt': payment['paidAt'] if payment else None,
                                 'paidTitle': payment['title'] if payment else None,
@@ -133,9 +140,9 @@ def snapshot(conn):
         mandates.append({**mandate, 'occurrences': list(reversed(occurrences))})
     trips = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM trips ORDER BY rowid DESC')]
     active = conn.execute('SELECT value FROM settings WHERE key="activeTripId"').fetchone()
-    return {'schemaVersion': 3, 'currency': 'INR', 'timezone': 'Asia/Kolkata',
+    return {'schemaVersion': 4, 'currency': 'INR', 'timezone': 'Asia/Kolkata',
             'entries': entries, 'repayments': repayments, 'categories': categories, 'mandates': mandates,
-            'trips': trips, 'activeTripId': active[0] if active else None}
+            'trips': trips, 'activeTripId': active[0] if active else None, 'trash': trash}
 
 
 def remaining(entry, repayments):
@@ -167,6 +174,7 @@ class Ledger:
             conn.execute('CREATE TABLE IF NOT EXISTS mandates (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS trips (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
+            conn.execute('CREATE TABLE IF NOT EXISTS trash (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             conn.execute('CREATE TABLE IF NOT EXISTS mandate_payments (mandate_id TEXT NOT NULL REFERENCES mandates(id), period TEXT NOT NULL, expense_id TEXT NOT NULL UNIQUE REFERENCES entries(id), paid_at TEXT NOT NULL, PRIMARY KEY(mandate_id,period))')
             for name in CATEGORIES:
                 if not conn.execute('SELECT 1 FROM categories WHERE parent="" AND name=? COLLATE NOCASE', (name,)).fetchone():
@@ -319,8 +327,13 @@ class Ledger:
             mandate = json.loads(row[0])
             if conn.execute('SELECT 1 FROM mandate_payments WHERE mandate_id=? AND period=?', (identifier, period)).fetchone():
                 return self.state()
-            if period < mandate['firstDueDate'][:7] or period > month_key(today()) or not any(
-                    w['from'] <= period and (w['to'] is None or period <= w['to']) for w in mandate['activeWindows']):
+            reversed_payment = any(item.get('mandatePayment') and
+                                   item['mandatePayment']['mandateId'] == identifier and
+                                   item['mandatePayment']['period'] == period
+                                   for (payload,) in conn.execute('SELECT payload FROM trash')
+                                   for item in [json.loads(payload)])
+            if period < mandate['firstDueDate'][:7] or period > month_key(today()) or not (reversed_payment or any(
+                    w['from'] <= period and (w['to'] is None or period <= w['to']) for w in mandate['activeWindows'])):
                 raise ValueError('This month is not available for payment.')
             timestamp = now()
             entry = {'id': str(uuid.uuid4()), 'kind': 'expense', 'title': mandate['title'],
@@ -331,6 +344,53 @@ class Ledger:
             conn.execute('INSERT INTO entries(id,payload) VALUES (?,?)', (entry['id'], json.dumps(entry)))
             conn.execute('INSERT INTO mandate_payments(mandate_id,period,expense_id,paid_at) VALUES (?,?,?,?)',
                          (identifier, period, entry['id'], timestamp))
+        self.sync_note()
+        return self.state()
+
+    def trash_entry(self, data):
+        identifier = clean(data.get('id', ''), 36, True)
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM trash WHERE id=?', (identifier,)).fetchone():
+                return self.state()
+            row = conn.execute('SELECT payload FROM entries WHERE id=?', (identifier,)).fetchone()
+            if not row:
+                raise ValueError('Record not found. Refresh and check your journal or Trash.')
+            entry = json.loads(row[0])
+            repayments = [json.loads(r[0]) for r in conn.execute('SELECT payload FROM repayments WHERE entry_id=? ORDER BY rowid', (identifier,))]
+            payment = conn.execute('SELECT mandate_id,period,expense_id,paid_at FROM mandate_payments WHERE expense_id=?', (identifier,)).fetchone()
+            bundle = {'id': identifier, 'entry': entry, 'repayments': repayments,
+                      'mandatePayment': dict(zip(('mandateId', 'period', 'expenseId', 'paidAt'), payment)) if payment else None,
+                      'trashedAt': now()}
+            # Move the entire record graph atomically; active queries need no soft-delete exceptions.
+            conn.execute('INSERT INTO trash(id,payload) VALUES (?,?)', (identifier, json.dumps(bundle)))
+            conn.execute('DELETE FROM repayments WHERE entry_id=?', (identifier,))
+            conn.execute('DELETE FROM mandate_payments WHERE expense_id=?', (identifier,))
+            conn.execute('DELETE FROM entries WHERE id=?', (identifier,))
+        self.sync_note()
+        return self.state()
+
+    def restore_entry(self, data):
+        identifier = clean(data.get('id', ''), 36, True)
+        with self.lock, self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload FROM trash WHERE id=?', (identifier,)).fetchone()
+            if not row:
+                if conn.execute('SELECT 1 FROM entries WHERE id=?', (identifier,)).fetchone():
+                    return self.state()
+                raise ValueError('Record not found in Trash. Refresh and try again.')
+            bundle = json.loads(row[0]); entry = bundle['entry']; payment = bundle['mandatePayment']
+            if payment and conn.execute('SELECT 1 FROM mandate_payments WHERE mandate_id=? AND period=?', (payment['mandateId'], payment['period'])).fetchone():
+                raise ValueError('This mandate month already has a replacement payment. Move that expense to Trash before restoring this one.')
+            if entry.get('tripId'):
+                self.trip(conn, entry['tripId'])
+            conn.execute('INSERT INTO entries(id,payload) VALUES (?,?)', (identifier, json.dumps(entry)))
+            for repayment in bundle['repayments']:
+                conn.execute('INSERT INTO repayments(id,entry_id,payload) VALUES (?,?,?)', (repayment['id'], identifier, json.dumps(repayment)))
+            if payment:
+                conn.execute('INSERT INTO mandate_payments(mandate_id,period,expense_id,paid_at) VALUES (?,?,?,?)',
+                             (payment['mandateId'], payment['period'], identifier, payment['paidAt']))
+            conn.execute('DELETE FROM trash WHERE id=?', (identifier,))
         self.sync_note()
         return self.state()
 
@@ -586,7 +646,8 @@ def main():
                            '/api/reminders': ledger.toggle_reminder, '/api/categories': ledger.save_category,
                            '/api/mandates': ledger.save_mandate, '/api/mandate-status': ledger.toggle_mandate,
                            '/api/mandate-payments': ledger.pay_mandate,
-                           '/api/trips': ledger.save_trip, '/api/trip-status': ledger.trip_status}
+                           '/api/trips': ledger.save_trip, '/api/trip-status': ledger.trip_status,
+                           '/api/trash': ledger.trash_entry, '/api/restore': ledger.restore_entry}
                 action = methods.get(self.path)
                 if not action:
                     self.reply(404, {'error':'Not found.'})

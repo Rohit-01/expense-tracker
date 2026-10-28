@@ -162,7 +162,7 @@ class TripTests(ProductionFixture, unittest.TestCase):
             state=self.get(client,'/api/export.json').json
             self.assertEqual(state['trips'],[trip]);self.assertEqual(state['activeTripId'],trip['id'])
             self.assertEqual(state['entries'][0]['tripId'],trip['id'])
-            self.assertEqual(state['schemaVersion'],3)
+            self.assertEqual(state['schemaVersion'],4)
 
     def test_concurrent_active_updates_leave_exactly_one_default(self):
         ledger=Ledger(self.root/'concurrent','')

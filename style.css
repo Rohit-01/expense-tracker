@@ -227,3 +227,34 @@ body[data-pocket-view="quick-entry"] .page-nav{display:none}
   #trip-form .form-row{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:380px){.journal-refine{grid-template-columns:minmax(0,1fr)}}
+
+/* Summary selectors do not control the journal or entry form. */
+.summary-filters{display:grid;grid-template-columns:minmax(0,210px) minmax(0,300px);gap:8px 14px;margin:22px 0 14px;align-items:end}
+.summary-filters label{margin:0 0 6px}
+.summary-filters select{min-height:44px}
+.summary-filters .field-note,.summary-scope{grid-column:1/-1;margin:0}
+.summary-scope{font-size:12px;font-weight:600;color:var(--green);overflow-wrap:anywhere}
+body[data-pocket-view="trips"] .summary-filters,
+body[data-pocket-view="quick-entry"] .summary-filters,
+body[data-pocket-view="trash"] .summary-filters,
+body[data-pocket-view="trash"] .stats,
+body[data-pocket-view="trash"] .workspace{display:none}
+#trash-section{margin:20px 0 40px}
+.trash-record{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:18px;border-bottom:1px solid var(--line);padding:24px 0}
+.trash-main{min-width:0}
+.trash-main h3{margin:0}
+.trash-main .item-meta{margin:6px 0}
+.trash-amount{display:block;margin-top:12px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.restore-button{min-height:44px!important;min-width:86px}
+.danger-text{color:var(--red)}
+.button.danger{color:white;background:#963d30;border-color:#963d30;min-height:44px}
+.button.danger:hover{background:#7d3026}
+.button:disabled,.text-button:disabled{opacity:.6;cursor:wait}
+#delete-summary{font-size:15px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+#delete-dialog .dialog-actions{flex-wrap:wrap}
+@media(max-width:480px){
+  .summary-filters{grid-template-columns:minmax(0,1fr);gap:10px}
+  .trash-record{grid-template-columns:minmax(0,1fr);gap:12px}
+  .restore-button{justify-self:start}
+  .page-nav{flex-wrap:wrap}
+}
